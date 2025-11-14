@@ -26,7 +26,7 @@ on:
         description: "Notion property name for release stage"
         required: false
         type: string
-        default: "Release Stage"
+        default: "Status"
       release_property:
         description: "Notion property name for release relation"
         required: false
