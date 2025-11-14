@@ -1,0 +1,465 @@
+name: Release Manager - Dev
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: "PR number to process"
+        required: false
+        type: string
+      dev_branch:
+        description: "Development branch name"
+        required: false
+        type: string
+        default: "dev"
+      task_id_pattern:
+        description: "Regex pattern for task IDs"
+        required: false
+        type: string
+        default: "STR-\\d+"
+      task_id_property:
+        description: "Notion property name for task ID"
+        required: false
+        type: string
+        default: "ID"
+      release_stage_property:
+        description: "Notion property name for release stage"
+        required: false
+        type: string
+        default: "Release Stage"
+      release_property:
+        description: "Notion property name for release relation"
+        required: false
+        type: string
+        default: "Release"
+      release_notes_property:
+        description: "Notion property name for release notes"
+        required: false
+        type: string
+        default: "Release Notes"
+      testing_notes_property:
+        description: "Notion property name for testing notes"
+        required: false
+        type: string
+        default: "Testing Notes"
+      release_stage_dev:
+        description: "Release stage value for dev environment"
+        required: false
+        type: string
+        default: "On Dev"
+      release_stage_partial:
+        description: "Release stage value for partially merged tasks"
+        required: false
+        type: string
+        default: "Partially On Dev"
+      next_release_name:
+        description: "Name for the next/pending release"
+        required: false
+        type: string
+        default: "Next Release"
+      release_status_next:
+        description: "Release status value for next/pending releases"
+        required: false
+        type: string
+        default: "Next"
+      release_label_major:
+        description: "PR label for major version bump"
+        required: false
+        type: string
+        default: "Major"
+      release_label_minor:
+        description: "PR label for minor version bump"
+        required: false
+        type: string
+        default: "Minor"
+      release_label_patch:
+        description: "PR label for patch version bump"
+        required: false
+        type: string
+        default: "Patch"
+      release_label_property:
+        description: "Notion property name for release labels"
+        required: false
+        type: string
+        default: "Release Label"
+    secrets:
+      NOTION_API_TOKEN:
+        required: true
+      NOTION_TASKS_DATABASE_ID:
+        required: true
+      NOTION_RELEASES_DATABASE_ID:
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  process-dev-pr:
+    runs-on: ubuntu-latest
+    env:
+      DEV_BRANCH: ${{ inputs.dev_branch }}
+      TASK_ID_PATTERN: ${{ inputs.task_id_pattern }}
+      TASK_ID_PROPERTY: ${{ inputs.task_id_property }}
+      RELEASE_STAGE_PROPERTY: ${{ inputs.release_stage_property }}
+      RELEASE_PROPERTY: ${{ inputs.release_property }}
+      RELEASE_NOTES_PROPERTY: ${{ inputs.release_notes_property }}
+      TESTING_NOTES_PROPERTY: ${{ inputs.testing_notes_property }}
+      RELEASE_STAGE_DEV: ${{ inputs.release_stage_dev }}
+      NEXT_RELEASE_NAME: ${{ inputs.next_release_name }}
+      RELEASE_STATUS_NEXT: ${{ inputs.release_status_next }}
+      RELEASE_LABEL_MAJOR: ${{ inputs.release_label_major }}
+      RELEASE_LABEL_MINOR: ${{ inputs.release_label_minor }}
+      RELEASE_LABEL_PATCH: ${{ inputs.release_label_patch }}
+      RELEASE_LABEL_PROPERTY: ${{ inputs.release_label_property }}
+      RELEASE_STAGE_PARTIAL: ${{ inputs.release_stage_partial }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Retrieve merged PR
+        id: collect_pr
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // Check if PR number was provided as input (for workflow_call or manual dispatch)
+            const inputPrNumber = "${{ inputs.pr_number }}";
+            const eventPrNumber = context.payload?.pull_request?.number;
+
+            if (inputPrNumber) {
+              console.log(`Processing PR #${inputPrNumber} from input`);
+              core.setOutput("pr_number", inputPrNumber);
+            } else if (eventPrNumber && context.payload.pull_request?.merged === true) {
+              console.log(`Processing merged PR #${eventPrNumber} from event`);
+              core.setOutput("pr_number", String(eventPrNumber));
+            } else {
+              console.log("No merged PR found in event payload or inputs.");
+              core.setOutput("pr_number", "");
+            }
+
+      - name: Fetch PR details
+        if: steps.collect_pr.outputs.pr_number != ''
+        id: pr_details
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prNumber = "${{ steps.collect_pr.outputs.pr_number }}";
+            if (!prNumber) {
+              core.setOutput("pr_data", "[]");
+              return;
+            }
+
+            const pattern = process.env.TASK_ID_PATTERN;
+            const taskIdPattern = new RegExp(pattern, 'gi');
+
+            try {
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: Number(prNumber),
+              });
+              
+              if (!pr.merged_at) {
+                console.log(`PR #${prNumber} is not merged, skipping.`);
+                core.setOutput("pr_data", "[]");
+                return;
+              }
+              
+              const notionIds = (pr.title.match(taskIdPattern) || []).map(s => s.toUpperCase());
+              
+              // Helper function to strip HTML comments (including multi-line) from text
+              function stripComments(text) {
+                if (!text) return text;
+                // Remove HTML comments: <!-- ... --> (handles multi-line comments)
+                // This removes all HTML comments, including those with newlines
+                let cleaned = text.replace(/<!--[\s\S]*?-->/g, '');
+                // Clean up any extra whitespace left behind
+                cleaned = cleaned.replace(/\n\s*\n\s*\n/g, '\n\n'); // Replace multiple blank lines with double newline
+                return cleaned.trim();
+              }
+              
+              // Parse Release Notes from description
+              const notesMatch = pr.body?.match(/## Release Notes([\s\S]*?)(?=##|$)/i);
+              const releaseNotes = notesMatch ? stripComments(notesMatch[1]) : "";
+              
+              // Parse Testing Notes from description
+              const testingNotesMatch = pr.body?.match(/## Testing Notes([\s\S]*?)(?=##|$)/i);
+              const testingNotes = testingNotesMatch ? stripComments(testingNotesMatch[1]) : "";
+              
+              // Parse Impact (version strategy) from description
+              // Look for checked checkboxes or text indicating Major/Minor/Patch
+              const impactSection = pr.body?.match(/## Impact([\s\S]*?)(?=##|$)/i);
+              let releaseLabel = null; // Default to no release label
+              
+              if (impactSection) {
+                const impactText = stripComments(impactSection[1]);
+                // Check for checked checkboxes: [x] or [X] followed by **Major**, **Minor**, or **Patch**
+                // Handle various formats: - [x], * [x], [x] with optional whitespace
+                const majorMatch = impactText.match(/[-*]?\s*\[x\]\s*\*\*Major\*\*/i) || impactText.match(/\[x\]\s*.*?\*\*Major\*\*/i);
+                const minorMatch = impactText.match(/[-*]?\s*\[x\]\s*\*\*Minor\*\*/i) || impactText.match(/\[x\]\s*.*?\*\*Minor\*\*/i);
+                const patchMatch = impactText.match(/[-*]?\s*\[x\]\s*\*\*Patch\*\*/i) || impactText.match(/\[x\]\s*.*?\*\*Patch\*\*/i);
+                
+                if (majorMatch) {
+                  releaseLabel = process.env.RELEASE_LABEL_MAJOR;
+                } else if (minorMatch) {
+                  releaseLabel = process.env.RELEASE_LABEL_MINOR;
+                } else if (patchMatch) {
+                  releaseLabel = process.env.RELEASE_LABEL_PATCH;
+                } else {
+                  // Do not populate release label if not explicitly set
+                }
+              }
+              
+              console.log(`PR #${prNumber}: Parsed version strategy: ${releaseLabel}`);
+              
+              // Parse dependent PRs from description
+              // Look for section like "## Dependent PRs" or "## Dependencies"
+              const dependentPRsSection = pr.body?.match(/## (?:Dependent|Dependencies|Related) PRs?([\s\S]*?)(?=##|$)/i);
+              const dependentPRs = [];
+              
+              if (dependentPRsSection) {
+                // Strip comments before parsing PR links
+                const sectionText = stripComments(dependentPRsSection[1]);
+                
+                // Only parse if there's actual content after stripping comments
+                if (sectionText && sectionText.trim().length > 0) {
+                  // Match GitHub PR links: https://github.com/owner/repo/pull/123
+                  // or relative links: owner/repo#123 or #123 (same repo)
+                  const prLinkRegex = /(?:https?:\/\/github\.com\/([\w\-\.]+)\/([\w\-\.]+)\/pull\/(\d+)|([\w\-\.]+)\/([\w\-\.]+)#(\d+)|#(\d+))/gi;
+                  let match;
+                  while ((match = prLinkRegex.exec(sectionText)) !== null) {
+                    if (match[7]) {
+                      // Same repo format: #123
+                      dependentPRs.push({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        number: parseInt(match[7])
+                      });
+                    } else if (match[4]) {
+                      // owner/repo#123 format
+                      dependentPRs.push({
+                        owner: match[4],
+                        repo: match[5],
+                        number: parseInt(match[6])
+                      });
+                    } else {
+                      // Full URL format
+                      dependentPRs.push({
+                        owner: match[1],
+                        repo: match[2],
+                        number: parseInt(match[3])
+                      });
+                    }
+                  }
+                }
+              }
+              
+              // Always include current PR in the list
+              const allPRs = [
+                { owner: context.repo.owner, repo: context.repo.repo, number: parseInt(prNumber) },
+                ...dependentPRs
+              ];
+              
+              if (notionIds.length) {
+                const result = {
+                  prNumber: prNumber,
+                  title: pr.title,
+                  mergedAt: pr.merged_at,
+                  notionIds: notionIds,
+                  releaseNotes: releaseNotes,
+                  testingNotes: testingNotes,
+                  releaseLabel: releaseLabel,
+                  allPRs: allPRs
+                };
+                console.log(`PR #${prNumber}: Tasks: ${notionIds.join(", ")}, Version: ${releaseLabel}, Dependent PRs: ${dependentPRs.length}`);
+                core.setOutput("pr_data", JSON.stringify([result]));
+              } else {
+                core.setOutput("pr_data", "[]");
+              }
+            } catch (e) {
+              console.log(`Error fetching PR #${prNumber}: ${e.message}`);
+              core.setOutput("pr_data", "[]");
+            }
+
+      - name: Update Notion tasks
+        if: steps.pr_details.outputs.pr_data != '[]'
+        uses: actions/github-script@v6
+        env:
+          PR_DATA: ${{ steps.pr_details.outputs.pr_data }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const notionApi = "https://api.notion.com/v1";
+            const notionToken = "${{ secrets.NOTION_API_TOKEN }}";
+            const tasksDB = "${{ secrets.NOTION_TASKS_DATABASE_ID }}";
+            const releasesDB = "${{ secrets.NOTION_RELEASES_DATABASE_ID }}";
+            const prData = JSON.parse(process.env.PR_DATA || "[]");
+
+            if (!prData.length) {
+              console.log("No PR data to process.");
+              return;
+            }
+
+            const headers = {
+              "Authorization": `Bearer ${notionToken}`,
+              "Notion-Version": "2022-06-28",
+              "Content-Type": "application/json"
+            };
+
+            async function queryNotionDB(db, body) {
+              const res = await fetch(`${notionApi}/databases/${db}/query`, {
+                method: "POST",
+                headers,
+                body: JSON.stringify(body)
+              });
+              if (!res.ok) throw new Error(`Query failed: ${res.status} ${await res.text()}`);
+              return res.json();
+            }
+
+            async function patchPage(pageId, properties) {
+              const res = await fetch(`${notionApi}/pages/${pageId}`, {
+                method: "PATCH",
+                headers,
+                body: JSON.stringify({ properties })
+              });
+              if (!res.ok) throw new Error(`Patch failed: ${res.status} ${await res.text()}`);
+              return res.json();
+            }
+
+            async function createPage(db, properties) {
+              const res = await fetch(`${notionApi}/pages`, {
+                method: "POST",
+                headers,
+                body: JSON.stringify({ parent: { database_id: db }, properties })
+              });
+              if (!res.ok) throw new Error(`Create failed: ${res.status} ${await res.text()}`);
+              return res.json();
+            }
+
+            async function ensureRelease(version, status) {
+              const found = await queryNotionDB(releasesDB, {
+                filter: { property: "Version", title: { equals: version } }
+              });
+              if (found.results.length) return found.results[0].id;
+              const page = await createPage(releasesDB, {
+                Version: { title: [{ text: { content: version } }] },
+                Status: { select: { name: status } },
+                "Release Date": { date: { start: new Date().toISOString() } }
+              });
+              return page.id;
+            }
+
+            async function sleep(ms) {
+              return new Promise(r => setTimeout(r, ms));
+            }
+
+            // Check if a PR is merged
+            async function checkPRStatus(owner, repo, prNumber) {
+              try {
+                const { data: pr } = await github.rest.pulls.get({
+                  owner: owner,
+                  repo: repo,
+                  pull_number: prNumber
+                });
+                return {
+                  merged: !!pr.merged_at,
+                  number: prNumber,
+                  owner: owner,
+                  repo: repo,
+                  title: pr.title,
+                  url: pr.html_url
+                };
+              } catch (e) {
+                console.log(`Error checking PR ${owner}/${repo}#${prNumber}: ${e.message}`);
+                return {
+                  merged: false,
+                  number: prNumber,
+                  owner: owner,
+                  repo: repo,
+                  error: e.message
+                };
+              }
+            }
+
+            // Format PR for display
+            function formatPR(prInfo) {
+              if (prInfo.error) {
+                return `${prInfo.repo}#${prInfo.number}`;
+              }
+              return `${prInfo.repo}#${prInfo.number}`;
+            }
+
+            const TASK_ID_PROPERTY = process.env.TASK_ID_PROPERTY;
+            const RELEASE_STAGE_PROP = process.env.RELEASE_STAGE_PROPERTY;
+            const RELEASE_REL_PROP = process.env.RELEASE_PROPERTY;
+            const RELEASE_NOTES_PROP = process.env.RELEASE_NOTES_PROPERTY;
+            const TESTING_NOTES_PROP = process.env.TESTING_NOTES_PROPERTY;
+            const RELEASE_LABEL_PROP = process.env.RELEASE_LABEL_PROPERTY;
+            const DEV_STAGE = process.env.RELEASE_STAGE_DEV;
+            const PARTIAL_STAGE = process.env.RELEASE_STAGE_PARTIAL;
+            const RELEASE_LABEL_PATCH = process.env.RELEASE_LABEL_PATCH;
+
+            const nextReleaseName = process.env.NEXT_RELEASE_NAME;
+            const statusNext = process.env.RELEASE_STATUS_NEXT;
+            const nextReleaseId = await ensureRelease(nextReleaseName, statusNext);
+            console.log(`Pending release page: "${nextReleaseName}" (${nextReleaseId})`);
+
+            for (const pr of prData) {
+              const releaseLabel = pr.releaseLabel;
+
+              // Check status of all PRs
+              const prStatuses = [];
+              for (const prInfo of pr.allPRs) {
+                const status = await checkPRStatus(prInfo.owner, prInfo.repo, prInfo.number);
+                prStatuses.push(status);
+                await sleep(100);
+              }
+
+              const allMerged = prStatuses.every(p => p.merged);
+              const pendingPRs = prStatuses.filter(p => !p.merged);
+
+              for (const notionKey of pr.notionIds) {
+                const numericId = Number((notionKey.match(/\d+/) || [])[0] || 0);
+                if (!numericId) continue;
+                try {
+                  const found = await queryNotionDB(tasksDB, {
+                    filter: { property: TASK_ID_PROPERTY, unique_id: { equals: numericId } }
+                  });
+                  if (!found.results.length) {
+                    console.log(`Task ${notionKey} not found`);
+                    continue;
+                  }
+                  const task = found.results[0];
+                  const props = {
+                    [RELEASE_REL_PROP]: { relation: [{ id: nextReleaseId }] }
+                  };
+
+                  if (allMerged) {
+                    props[RELEASE_STAGE_PROP] = { select: { name: DEV_STAGE } };
+                    console.log(`Task ${notionKey}: All PRs merged → ${DEV_STAGE}`);
+                  } else {
+                    props[RELEASE_STAGE_PROP] = { select: { name: PARTIAL_STAGE } };
+                    console.log(`Task ${notionKey}: ${pendingPRs.length} PR(s) pending → ${PARTIAL_STAGE}`);
+                  }
+
+                  if (releaseLabel) {
+                    props[RELEASE_LABEL_PROP] = { select: { name: releaseLabel } };
+                  }
+
+                  if (pr.releaseNotes) {
+                    props[RELEASE_NOTES_PROP] = { rich_text: [{ text: { content: pr.releaseNotes.slice(0, 2000) } }] };
+                  }
+
+                  if (pr.testingNotes) {
+                    props[TESTING_NOTES_PROP] = { rich_text: [{ text: { content: pr.testingNotes.slice(0, 2000) } }] };
+                  }
+
+                  await patchPage(task.id, props);
+                  await sleep(300);
+                } catch (e) {
+                  console.log(`Error updating task ${notionKey}: ${e.message}`);
+                }
+              }
+            }
