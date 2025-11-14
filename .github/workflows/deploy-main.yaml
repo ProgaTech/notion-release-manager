@@ -1,0 +1,43 @@
+name: Deploy to Main
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Deploy to Production
+        run: |
+          echo "🚀 Deploying to Production environment..."
+          echo "This is a placeholder for your actual deployment steps"
+          echo "Examples:"
+          echo "  - Build application"
+          echo "  - Run comprehensive tests"
+          echo "  - Deploy to production server/cloud"
+          echo "  - Run integration tests"
+          echo "  - Verify deployment health"
+          echo ""
+          echo "✅ Deployment to Production completed successfully"
+          # Simulate deployment time
+          sleep 2
+
+  promote-release:
+    needs: deploy
+    uses: ./.github/workflows/release-main.yaml
+    secrets:
+      NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
+      NOTION_TASKS_DATABASE_ID: ${{ secrets.NOTION_TASKS_DATABASE_ID }}
+      NOTION_RELEASES_DATABASE_ID: ${{ secrets.NOTION_RELEASES_DATABASE_ID }}
+

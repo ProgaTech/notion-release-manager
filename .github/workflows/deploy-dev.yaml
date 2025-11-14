@@ -1,0 +1,49 @@
+name: Deploy to Dev
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [dev]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number that triggered this deployment (optional)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy to Dev Environment
+        run: |
+          echo "🚀 Deploying to Dev environment..."
+          echo "This is a placeholder for your actual deployment steps"
+          echo "Examples:"
+          echo "  - Build application"
+          echo "  - Run tests"
+          echo "  - Deploy to dev server/cloud"
+          echo "  - Run smoke tests"
+          echo ""
+          echo "✅ Deployment to Dev completed successfully"
+          # Simulate deployment time
+          sleep 2
+
+  update-notion:
+    needs: deploy
+    if: github.event.pull_request.merged == true || inputs.pr_number != ''
+    uses: ./.github/workflows/release-dev.yaml
+    with:
+      pr_number: ${{ inputs.pr_number || github.event.pull_request.number }}
+    secrets:
+      NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
+      NOTION_TASKS_DATABASE_ID: ${{ secrets.NOTION_TASKS_DATABASE_ID }}
+      NOTION_RELEASES_DATABASE_ID: ${{ secrets.NOTION_RELEASES_DATABASE_ID }}
