@@ -148,10 +148,12 @@ jobs:
         if: steps.collect_pr.outputs.pr_numbers != '[]'
         id: pr_details
         uses: actions/github-script@v6
+        env:
+          PR_NUMBERS: ${{ steps.collect_pr.outputs.pr_numbers }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const prNumbersJson = "${{ steps.collect_pr.outputs.pr_numbers }}";
+            const prNumbersJson = process.env.PR_NUMBERS || "[]";
             if (!prNumbersJson || prNumbersJson === '[]') {
               core.setOutput("pr_data", "[]");
               return;
