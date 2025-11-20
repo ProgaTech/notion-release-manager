@@ -153,14 +153,13 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const prNumbersJson = (process.env.PR_NUMBERS || "[]").trim();
-            if (!prNumbersJson || prNumbersJson === '[]') {
+            const prNumbers = JSON.parse(process.env.PR_NUMBERS || '[]');
+            if (!prNumbers || prNumbers.length === 0) {
               console.log("No PR numbers found in environment.");
               core.setOutput("pr_data", "[]");
               return;
             }
 
-            const prNumbers = JSON.parse(prNumbersJson);
             console.log(`Fetching details for PRs: ${prNumbers.join(', ')}`);
             const pattern = process.env.TASK_ID_PATTERN;
             const taskIdPattern = new RegExp(pattern, 'gi');
