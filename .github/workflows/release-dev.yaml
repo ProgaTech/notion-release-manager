@@ -268,7 +268,7 @@ jobs:
             core.setOutput("pr_data", JSON.stringify(results));
 
       - name: Update Notion tasks
-        if: steps.pr_details.outputs.pr_data != '[]' && steps.pr_details.outputs.pr_data != ''
+        if: steps.pr_details.outputs.pr_data != '[]'
         uses: actions/github-script@v6
         env:
           PR_DATA: ${{ steps.pr_details.outputs.pr_data }}
