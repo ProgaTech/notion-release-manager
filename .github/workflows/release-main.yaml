@@ -3,11 +3,6 @@ name: Release Manager - Main
 on:
   workflow_call:
     inputs:
-      main_branch:
-        description: "Main branch name"
-        required: false
-        type: string
-        default: "main"
       release_stage_property:
         description: "Notion property name for release stage"
         required: false
@@ -79,7 +74,6 @@ jobs:
   promote-to-release:
     runs-on: ubuntu-latest
     env:
-      MAIN_BRANCH: ${{ inputs.main_branch }}
       RELEASE_STAGE_PROPERTY: ${{ inputs.release_stage_property }}
       RELEASE_PROPERTY: ${{ inputs.release_property }}
       RELEASE_STAGE_PROD: ${{ inputs.release_stage_prod }}
