@@ -427,10 +427,10 @@ jobs:
                   };
 
                   if (allMerged) {
-                    props[RELEASE_STAGE_PROP] = { select: { name: DEV_STAGE } };
+                    props[RELEASE_STAGE_PROP] = { status: { name: DEV_STAGE } };
                     console.log(`Task ${notionKey}: All PRs merged → ${DEV_STAGE}`);
                   } else {
-                    props[RELEASE_STAGE_PROP] = { select: { name: PARTIAL_STAGE } };
+                    props[RELEASE_STAGE_PROP] = { status: { name: PARTIAL_STAGE } };
                     console.log(`Task ${notionKey}: ${pendingPRs.length} PR(s) pending → ${PARTIAL_STAGE}`);
                   }
 

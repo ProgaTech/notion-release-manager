@@ -180,7 +180,7 @@ jobs:
                 filter: {
                   and: [
                     { property: RELEASE_REL_PROP, relation: { contains: nextReleaseId } },
-                    { property: RELEASE_STAGE_PROP, select: { equals: DEV_STAGE } }
+                    { property: RELEASE_STAGE_PROP, status: { equals: DEV_STAGE } }
                   ]
                 }
               });
@@ -267,7 +267,7 @@ jobs:
                 try {
                   const props = {
                     [RELEASE_REL_PROP]: { relation: [{ id: prodReleaseId }] },
-                    [RELEASE_STAGE_PROP]: { select: { name: PROD_STAGE } },
+                    [RELEASE_STAGE_PROP]: { status: { name: PROD_STAGE } },
                     "Release Date": { date: { start: new Date().toISOString() } }
                   };
                   await patchPage(task.id, props);
