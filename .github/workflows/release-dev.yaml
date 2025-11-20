@@ -181,6 +181,8 @@ jobs:
                 }
                 
                 const notionIds = (pr.title.match(taskIdPattern) || []).map(s => s.toUpperCase());
+                console.log(`PR title: ${pr.title}`);
+                console.log(`Notion IDs: ${notionIds.join(", ")}`);
                 
                 // Parse Release Notes from description
                 const notesMatch = pr.body?.match(/## Release Notes([\s\S]*?)(?=##|$)/i);
