@@ -405,11 +405,10 @@ jobs:
               const pendingPRs = prStatuses.filter(p => !p.merged);
 
               for (const notionKey of pr.notionIds) {
-                const numericId = Number((notionKey.match(/\d+/) || [])[0] || 0);
-                if (!numericId) continue;
+                if (!notionKey) continue;
                 try {
                   const found = await queryNotionDB(tasksDB, {
-                    filter: { property: TASK_ID_PROPERTY, unique_id: { equals: numericId } }
+                    filter: { property: TASK_ID_PROPERTY, title: { equals: notionKey } }
                   });
                   if (!found.results.length) {
                     console.log(`Task ${notionKey} not found`);
