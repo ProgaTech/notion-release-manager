@@ -174,13 +174,25 @@ jobs:
             }
 
             async function getLatestReleasedVersion() {
+              const statusReleased = process.env.RELEASE_STATUS_RELEASED;
+              const statusPartiallyReleased = process.env.STATUS_PARTIALLY_RELEASED;
+              
+              // Query for both "Released" and "Partially Released" statuses
+              const filter = {
+                or: [
+                  { property: "Status", select: { equals: statusReleased } }
+                ]
+              };
+              
+              if (statusPartiallyReleased) {
+                filter.or.push({ property: "Status", select: { equals: statusPartiallyReleased } });
+              }
+              
               const res = await queryNotionDB(releasesDB, {
-                filter: {
-                  property: "Status",
-                  select: { equals: process.env.RELEASE_STATUS_RELEASED }
-                },
+                filter,
                 sorts: [{ property: "Version", direction: "descending" }]
               });
+              
               if (!res.results.length) return "0.0.0";
               return res.results[0].properties.Version.title[0].plain_text;
             }
