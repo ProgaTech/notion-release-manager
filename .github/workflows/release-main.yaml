@@ -263,7 +263,7 @@ jobs:
 
               return {
                 releaseId,
-                repoAlreadyIncluded: !repoAlreadyIncluded || isNewRelease, // If this is a new release we just created, we need to process it even though repo is already included
+                repoAlreadyIncluded: repoAlreadyIncluded && !isNewRelease, // If this is a new release we just created, we need to process it even though repo is already included
                 currentRepos
               };
             }
