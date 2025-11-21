@@ -194,7 +194,9 @@ jobs:
               });
               
               if (!res.results.length) return "0.0.0";
-              return res.results[0].properties.Version.title[0].plain_text;
+              const version = res.results[0].properties.Version.title[0].plain_text;
+              const status = res.results[0].properties.Status.select.name;
+              return { version, status };
             }
 
             async function ensureReleaseWithRepoTracking(version, repoIdentifier, reposProperty, requiredReposList, statusPartiallyReleased, statusReleased) {
@@ -346,8 +348,8 @@ jobs:
             console.log(`Pending release page: "${nextReleaseName}" (${nextReleaseId})`);
 
             // Get latest released version from Notion (source of truth)
-            const latest = await getLatestReleasedVersion();
-            console.log(`Latest released version from Notion: ${latest}`);
+            const { version: latest, status: latestStatus } = await getLatestReleasedVersion();
+            console.log(`Latest released version from Notion: ${latest} (status: ${latestStatus})`);
 
             // Determine version bump based on Release Note labels from Notion tasks
             // Only consider tasks that are fully on dev (not partially)
@@ -386,7 +388,8 @@ jobs:
               console.log(`Error determining bump from Notion tasks: ${e.message}, defaulting to patch`);
             }
 
-            const nextVersion = bumpVersion(latest, calculatedBump);
+            // If the latest version is partially released, we don't need to bump the version to another one
+            const nextVersion = latestStatus === statusPartiallyReleased ? latest : bumpVersion(latest, calculatedBump);
             console.log(`Next version: ${nextVersion} (base: ${latest}, bump: ${calculatedBump})`);
 
             // Ensure release exists and track this repo
