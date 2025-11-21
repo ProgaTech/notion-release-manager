@@ -268,7 +268,7 @@ jobs:
             core.setOutput("pr_data", JSON.stringify(results));
 
       - name: Update Notion tasks
-        if: steps.pr_details.outputs.pr_data != '[]' && steps.pr_details.outputs.pr_data != ''
+        if: steps.pr_details.outputs.pr_data != '[]'
         uses: actions/github-script@v6
         env:
           PR_DATA: ${{ steps.pr_details.outputs.pr_data }}
@@ -405,9 +405,15 @@ jobs:
               const pendingPRs = prStatuses.filter(p => !p.merged);
 
               for (const notionKey of pr.notionIds) {
-                const numericId = Number((notionKey.match(/\d+/) || [])[0] || 0);
-                if (!numericId) continue;
+                if (!notionKey) continue;
                 try {
+                  // Extract numeric part from the ID (e.g., "STR-2534" -> 2534)
+                  // This is needed because auto_increment_id properties store only the number
+                  const numericId = Number((notionKey.match(/\d+/) || [])[0] || 0);
+                  if (!numericId) {
+                    console.log(`Could not extract numeric ID from ${notionKey}`);
+                    continue;
+                  }
                   const found = await queryNotionDB(tasksDB, {
                     filter: { property: TASK_ID_PROPERTY, unique_id: { equals: numericId } }
                   });
@@ -421,10 +427,10 @@ jobs:
                   };
 
                   if (allMerged) {
-                    props[RELEASE_STAGE_PROP] = { select: { name: DEV_STAGE } };
+                    props[RELEASE_STAGE_PROP] = { status: { name: DEV_STAGE } };
                     console.log(`Task ${notionKey}: All PRs merged → ${DEV_STAGE}`);
                   } else {
-                    props[RELEASE_STAGE_PROP] = { select: { name: PARTIAL_STAGE } };
+                    props[RELEASE_STAGE_PROP] = { status: { name: PARTIAL_STAGE } };
                     console.log(`Task ${notionKey}: ${pendingPRs.length} PR(s) pending → ${PARTIAL_STAGE}`);
                   }
 

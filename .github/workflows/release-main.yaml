@@ -287,7 +287,7 @@ jobs:
                 filter: {
                   and: [
                     { property: RELEASE_REL_PROP, relation: { contains: nextReleaseId } },
-                    { property: RELEASE_STAGE_PROP, select: { equals: DEV_STAGE } }
+                    { property: RELEASE_STAGE_PROP, status: { equals: DEV_STAGE } }
                   ]
                 }
               });
@@ -391,42 +391,28 @@ jobs:
             // If the latest version is partially released, we don't need to bump the version to another one
             const nextVersion = latestStatus === statusPartiallyReleased ? latest : bumpVersion(latest, calculatedBump);
             console.log(`Next version: ${nextVersion} (base: ${latest}, bump: ${calculatedBump})`);
+            const prodReleaseId = await ensureRelease(nextVersion, statusReleased);
 
-            // Ensure release exists and track this repo
-            const releaseInfo = await ensureReleaseWithRepoTracking(
-              nextVersion,
-              repoIdentifier,
-              reposProperty,
-              requiredReposList,
-              statusPartiallyReleased,
-              statusReleased
-            );
-            const prodReleaseId = releaseInfo.releaseId;
-
-            // Only promote tasks if this is the first time repo is processing for this release,
-            // to prevents duplicate task promotions when multiple repos trigger
-            if (!releaseInfo.repoAlreadyIncluded && nextReleaseTasks.length > 0) {
-              try {
-                console.log(`Promoting ${nextReleaseTasks.length} tasks from "${nextReleaseName}" to ${nextVersion}`);
-                
-                for (const task of nextReleaseTasks) {
-                  try {
-                    const props = {
-                      [RELEASE_REL_PROP]: { relation: [{ id: prodReleaseId }] },
-                      [RELEASE_STAGE_PROP]: { select: { name: PROD_STAGE } },
-                      "Release Date": { date: { start: new Date().toISOString() } }
-                    };
-                    await patchPage(task.id, props);
-                    await sleep(300);
-                  } catch (e) {
-                    console.log(`Error promoting task ${task.id}: ${e.message}`);
-                  }
+            // Promote tasks from "Next Release" to the new version
+            // Only promote tasks that are fully on dev (not partially)
+            try {
+              console.log(`Promoting ${nextReleaseTasks.length} tasks from "${nextReleaseName}" to ${nextVersion}`);
+              
+              for (const task of nextReleaseTasks) {
+                try {
+                  const props = {
+                    [RELEASE_REL_PROP]: { relation: [{ id: prodReleaseId }] },
+                    [RELEASE_STAGE_PROP]: { status: { name: PROD_STAGE } },
+                    "Release Date": { date: { start: new Date().toISOString() } }
+                  };
+                  await patchPage(task.id, props);
+                  await sleep(300);
+                } catch (e) {
+                  console.log(`Error promoting task ${task.id}: ${e.message}`);
                 }
-              } catch (e) {
-                console.log(`Error querying tasks for promotion: ${e.message}`);
               }
-            } else if (releaseInfo.repoAlreadyIncluded) {
-              console.log(`Tasks already promoted by another repo. Skipping task promotion.`);
+            } catch (e) {
+              console.log(`Error querying tasks for promotion: ${e.message}`);
             }
 
             // Only create git tag if repo is not already in the release,
