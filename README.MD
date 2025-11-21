@@ -27,6 +27,16 @@ When a PR is merged to your dev branch, this workflow:
 - Extracts Release Notes and Testing Notes from PR description
 - Automatically promotes tasks to "On Dev" when the final PR is merged
 
+### Production Workflow (`release-main.yaml`)
+
+When code is pushed to your main branch, this workflow:
+
+- Gets the latest released version from Notion (source of truth)
+- Calculates the next version based on Release Labels in "Next Release" tasks
+- Promotes all "On Dev" tasks from "Next Release" to the new version
+- Sets Release Stage to "On Prod"
+- Creates a Git tag `vX.Y.Z`
+
 ### PR Template Validation Workflow (`pr-template-validation.yaml`)
 
 When a PR is opened, edited, or marked ready for review, this workflow:
@@ -43,16 +53,6 @@ When a PR is opened, edited, or marked ready for review, this workflow:
 - Provides clear error messages indicating what needs to be fixed
 
 **Secondary PR Detection:** If a PR has entries in the "Dependent PRs" section, it's considered a secondary PR. For secondary PRs, Impact, Release Notes, and Testing Notes are optional since those details should be in the master/primary PR.
-
-### Production Workflow (`release-main.yaml`)
-
-When code is pushed to your main branch, this workflow:
-
-- Gets the latest released version from Notion (source of truth)
-- Calculates the next version based on Release Labels in "Next Release" tasks
-- Promotes all "On Dev" tasks from "Next Release" to the new version
-- Sets Release Stage to "On Prod"
-- Creates a Git tag `vX.Y.Z`
 
 ---
 
