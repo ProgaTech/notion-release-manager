@@ -32,10 +32,12 @@ When a PR is merged to your dev branch, this workflow:
 When code is pushed to your main branch, this workflow:
 
 - Gets the latest released version from Notion (source of truth)
-- Calculates the next version based on Release Labels in "Next Release" tasks
-- Promotes all "On Dev" tasks from "Next Release" to the new version
+- Calculates the next version based on Release Labels in "Next Release" tasks (shared across all repos)
+- Creates or finds the release in Notion and tracks which repositories are part of it
+- Promotes all "On Dev" tasks from "Next Release" to the new version (only once, by first repo)
 - Sets Release Stage to "On Prod"
-- Creates a Git tag `vX.Y.Z`
+- Creates a Git tag `vX.Y.Z` for this repository (only if not already tagged)
+- Updates release status: "Partially Released" when some repos are released, "Released" when all repos are released
 
 ### PR Template Validation Workflow (`pr-template-validation.yaml`)
 
@@ -79,11 +81,12 @@ The workflows use the existing **"GitHub Proga"** Notion integration. Make sure 
 
 **Releases Database** - Create a database with these properties:
 
-| Property     | Type   | Required | Example         |
-| ------------ | ------ | -------- | --------------- |
-| Version      | Title  | Yes      | 1.10.0          |
-| Status       | Select | Yes      | Next / Released |
-| Release Date | Date   | No       | 2025-11-10      |
+| Property     | Type         | Required | Example                                               |
+| ------------ | ------------ | -------- | ----------------------------------------------------- |
+| Version      | Title        | Yes      | 1.10.0                                                |
+| Status       | Select       | Yes      | Next / Partially Released / Released                  |
+| Release Date | Date         | No       | 2025-11-10                                            |
+| Repositories | Multi-select | Yes      | api, ui (tracks which repos are part of this release) |
 
 **Important:** Share both databases with the "GitHub Proga" Notion integration.
 
@@ -228,6 +231,9 @@ jobs:
   promote-release:
     needs: deploy
     uses: org-name/repo-name/.github/workflows/release-main.yaml@main
+    with:
+      repo_identifier: "api" # Required: identifier for this repo (e.g., "api", "ui", "web")
+      required_repos: "api,ui" # Optional: comma-separated list of repo identifiers that must be included for a release to be complete (e.g., "api,ui" or "api,ui,web")
     secrets:
       NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
       NOTION_TASKS_DATABASE_ID: ${{ secrets.NOTION_TASKS_DATABASE_ID }}
@@ -374,9 +380,55 @@ When a task spans multiple repositories (e.g., web and API):
 2. **Automatic release:**
    - Your deployment workflow runs
    - After successful deployment, `release-main.yaml` is called
-   - Version is calculated from Notion's latest release + task labels
-   - All "On Dev" tasks in "Next Release" are promoted to the new version
-   - Git tag `vX.Y.Z` is created
+   - Version is calculated from Notion's latest release + task labels (shared across all repos)
+   - Release is created or found in Notion with this version
+   - This repository is added to the release's "Repositories" list
+   - All "On Dev" tasks in "Next Release" are promoted to the new version (only by first repo)
+   - Git tag `vX.Y.Z` is created for this repository (only if not already tagged)
+   - Release status is updated: "Partially Released" if not all repos are released, "Released" when all repos are released
+
+### Multi-Repository Release Synchronization
+
+When you have multiple repositories (e.g., API and UI) that share the same Notion databases:
+
+**How it works:**
+
+- All repos use the same Tasks and Releases databases in Notion
+- Version is calculated once based on ALL tasks in "Next Release" (regardless of which repo they came from)
+- When a repo triggers the release workflow:
+  1. Calculates the version (same calculation for all repos)
+  2. Creates or finds the release in Notion for that version
+  3. Checks if this repo is already in the "Repositories" list
+  4. If not already included:
+     - Adds this repo to the "Repositories" list
+     - Promotes tasks to production (only first repo does this)
+     - Creates git tag for this repo
+     - Updates release status based on number of repos included
+  5. If already included: Skips task promotion and tag creation (idempotent)
+
+**Release Status:**
+
+- **"Partially Released"**: When not all required repos have been released yet
+- **"Released"**: When all required repos (specified in `required_repos`) have been released
+
+**Example scenarios:**
+
+**Scenario 1: Both repos trigger (typical case with required_repos: "api,ui")**
+
+- Repo A triggers → calculates version 1.2.0 → creates release → adds "api" to Repositories → status: "Partially Released" (missing "ui") → promotes tasks → tags Repo A
+- Repo B triggers → calculates version 1.2.0 → finds existing release → adds "ui" to Repositories → status: "Released" (all required repos included) → skips tasks (already done) → tags Repo B
+
+**Scenario 2: Simultaneous triggers**
+
+- Both repos trigger at the same time → both calculate same version → first one creates release → second one finds it → both add themselves → both tag
+
+**Important:**
+
+- Each repo must provide a unique `repo_identifier` when calling the workflow
+- Set `required_repos` to a comma-separated list of all repo identifiers that must be included for a release to be complete (e.g., `"api,ui"`)
+- If `required_repos` is not specified or empty, the release will be marked as "Released" after the first repo
+- Add a "Repositories" property to your Releases database as a **Multi-select** type (required)
+- For single-repo setups, the Repositories column will always contain just one value
 
 ### Version Calculation
 
@@ -409,6 +461,10 @@ All workflows support many input parameters for customization. See the workflow 
 - Property names in Notion
 - Release stage values
 - Release label values
+- **`repo_identifier`** - Required: Identifier for this repository (e.g., "api", "ui", "web")
+- **`required_repos`** - Optional: Comma-separated list of repo identifiers that must be included for a release to be complete (e.g., "api,ui" or "api,ui,web"). If not specified, release is marked as "Released" after first repo
+- **`repos_property`** - Optional: Notion property name for tracking repos (default: "Repositories")
+- **`status_partially_released`** - Optional: Status value for partially released versions (default: "Partially Released")
 - And more...
 
 ---
@@ -427,8 +483,9 @@ All workflows support many input parameters for customization. See the workflow 
 ### Releases Database
 
 - **Version** (Title) - Semantic version (e.g., "1.10.0")
-- **Status** (Select) - `Next` (pending) / `Released` (completed)
+- **Status** (Select) - `Next` (pending) / `Partially Released` (some repos released) / `Released` (all repos released)
 - **Release Date** (Date) - Optional release date
+- **Repositories** (Multi-select, required) - List of repositories included in this release (e.g., "api", "ui", "web"). For single-repo setups, this will always contain one value
 
 ---
 
