@@ -192,6 +192,7 @@ jobs:
               });
 
               let releasePage;
+              let isNewRelease = false;
 
               if (found.results.length) {
                 releasePage = found.results[0];
@@ -212,6 +213,7 @@ jobs:
                 };
 
                 releasePage = await createPage(releasesDB, properties);
+                isNewRelease = true;
                 console.log(`Created new release ${version} with repo "${repoIdentifier}"`);
               }
 
@@ -261,7 +263,7 @@ jobs:
 
               return {
                 releaseId,
-                repoAlreadyIncluded,
+                repoAlreadyIncluded: !repoAlreadyIncluded || isNewRelease, // If this is a new release we just created, we need to process it even though repo is already included
                 currentRepos
               };
             }
