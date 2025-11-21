@@ -1,0 +1,265 @@
+name: PR Template Validation
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, ready_for_review]
+  workflow_call:
+    inputs:
+      pr_number:
+        description: "PR number to validate"
+        required: false
+        type: string
+      task_id_pattern:
+        description: "Regex pattern for task IDs in PR title"
+        required: false
+        type: string
+        default: "STR-\\d+"
+
+permissions:
+  pull-requests: write
+  checks: write
+  contents: read
+
+jobs:
+  validate-pr-template:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate PR Template
+        id: validate
+        uses: actions/github-script@v6
+        env:
+          TASK_ID_PATTERN: ${{ inputs.task_id_pattern || 'STR-\\d+' }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // Get PR number from input or event
+            const inputPrNumber = "${{ inputs.pr_number }}";
+            const prNumber = (inputPrNumber && inputPrNumber.trim() !== '') 
+              ? parseInt(inputPrNumber) 
+              : context.payload.pull_request?.number;
+
+            if (!prNumber) {
+              core.setFailed('No PR number provided');
+              return;
+            }
+
+            console.log(`Validating PR #${prNumber}`);
+
+            // Fetch PR details
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+
+            // Check PR title for task IDs
+            const taskIdPattern = new RegExp(process.env.TASK_ID_PATTERN, 'gi');
+            const taskIds = pr.title.match(taskIdPattern) || [];
+
+            if (taskIds.length === 0) {
+              core.setFailed(`PR title must contain at least one task ID matching pattern: ${process.env.TASK_ID_PATTERN}`);
+              await github.rest.checks.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'PR Template Validation',
+                head_sha: pr.head.sha,
+                status: 'completed',
+                conclusion: 'failure',
+                output: {
+                  title: 'PR title missing task ID',
+                  summary: `PR title must contain at least one task ID matching the pattern: \`${process.env.TASK_ID_PATTERN}\`\n\nExample: \`feat: add feature STR-123\``,
+                },
+              });
+              return;
+            }
+
+            console.log(`Found task IDs in PR title: ${taskIds.join(', ')}`);
+
+            if (!pr.body) {
+              core.setFailed('PR description is empty');
+              await github.rest.checks.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'PR Template Validation',
+                head_sha: pr.head.sha,
+                status: 'completed',
+                conclusion: 'failure',
+                output: {
+                  title: 'PR description is empty',
+                  summary: 'Please fill in the PR description using the template.',
+                },
+              });
+              return;
+            }
+
+            const body = pr.body;
+
+            // Helper function to strip HTML comments
+            function stripComments(text) {
+              if (!text) return '';
+              return text.replace(/<!--[\s\S]*?-->/g, '').trim();
+            }
+
+            // Check for required sections
+            const hasDescription = /## Description/i.test(body);
+            const hasImpact = /## Impact/i.test(body);
+            const hasReleaseNotes = /## Release Notes/i.test(body);
+            const hasTestingNotes = /## Testing Notes/i.test(body);
+            const hasDependentPRs = /## Dependent PRs/i.test(body);
+
+            const errors = [];
+            const warnings = [];
+
+            // Check Description section
+            if (!hasDescription) {
+              errors.push('Missing "## Description" section');
+            } else {
+              const descMatch = body.match(/## Description([\s\S]*?)(?=##|$)/i);
+              const descContent = descMatch ? stripComments(descMatch[1]) : '';
+              if (!descContent || descContent.trim().length === 0) {
+                errors.push('"## Description" section is empty');
+              }
+            }
+
+            // Check for Dependent PRs (needed to determine if this is a secondary PR)
+            let hasDependentPRsContent = false;
+            if (hasDependentPRs) {
+              const dependentMatch = body.match(/## Dependent PRs([\s\S]*?)(?=##|$)/i);
+              const dependentContent = dependentMatch ? stripComments(dependentMatch[1]) : '';
+              
+              // Check if there's actual content (not just comments or empty)
+              if (dependentContent && dependentContent.trim().length > 0) {
+                // Check if there are any PR references (#123 or URLs)
+                const prLinkRegex = /(?:https?:\/\/github\.com\/([\w\-\.]+)\/([\w\-\.]+)\/pull\/(\d+)|([\w\-\.]+)\/([\w\-\.]+)#(\d+)|#(\d+))/i;
+                hasDependentPRsContent = prLinkRegex.test(dependentContent);
+              }
+            }
+
+            // Check Impact section - required unless this is a secondary PR
+            if (!hasImpact) {
+              if (!hasDependentPRsContent) {
+                errors.push('Missing "## Impact" section');
+              } else {
+                warnings.push('Missing "## Impact" section (allowed for secondary PRs with dependent PRs)');
+              }
+            } else {
+              const impactMatch = body.match(/## Impact([\s\S]*?)(?=##|$)/i);
+              const impactContent = impactMatch ? stripComments(impactMatch[1]) : '';
+              
+              // Check if at least one checkbox is checked
+              const hasCheckedMajor = /[-*]?\s*\[x\]\s*\*\*Major\*\*/i.test(impactContent) || 
+                                      /\[x\]\s*.*?\*\*Major\*\*/i.test(impactContent);
+              const hasCheckedMinor = /[-*]?\s*\[x\]\s*\*\*Minor\*\*/i.test(impactContent) || 
+                                      /\[x\]\s*.*?\*\*Minor\*\*/i.test(impactContent);
+              const hasCheckedPatch = /[-*]?\s*\[x\]\s*\*\*Patch\*\*/i.test(impactContent) || 
+                                      /\[x\]\s*.*?\*\*Patch\*\*/i.test(impactContent);
+              
+              if (!hasCheckedMajor && !hasCheckedMinor && !hasCheckedPatch) {
+                if (!hasDependentPRsContent) {
+                  errors.push('"## Impact" section: Please select at least one option (Major, Minor, or Patch)');
+                } else {
+                  warnings.push('"## Impact" section: No option selected (allowed for secondary PRs with dependent PRs)');
+                }
+              }
+            }
+
+            // Check Release Notes - required unless this is a secondary PR
+            if (!hasReleaseNotes) {
+              if (!hasDependentPRsContent) {
+                errors.push('Missing "## Release Notes" section');
+              } else {
+                warnings.push('Missing "## Release Notes" section (allowed for secondary PRs with dependent PRs)');
+              }
+            } else {
+              const releaseNotesMatch = body.match(/## Release Notes([\s\S]*?)(?=##|$)/i);
+              const releaseNotesContent = releaseNotesMatch ? stripComments(releaseNotesMatch[1]) : '';
+              
+              if (!releaseNotesContent || releaseNotesContent.trim().length === 0) {
+                if (!hasDependentPRsContent) {
+                  errors.push('"## Release Notes" section is empty (required for primary PRs)');
+                } else {
+                  warnings.push('"## Release Notes" section is empty (allowed for secondary PRs with dependent PRs)');
+                }
+              }
+            }
+
+            // Check Testing Notes - required unless this is a secondary PR
+            if (!hasTestingNotes) {
+              if (!hasDependentPRsContent) {
+                errors.push('Missing "## Testing Notes" section');
+              } else {
+                warnings.push('Missing "## Testing Notes" section (allowed for secondary PRs with dependent PRs)');
+              }
+            } else {
+              const testingNotesMatch = body.match(/## Testing Notes([\s\S]*?)(?=##|$)/i);
+              const testingNotesContent = testingNotesMatch ? stripComments(testingNotesMatch[1]) : '';
+              
+              if (!testingNotesContent || testingNotesContent.trim().length === 0) {
+                if (!hasDependentPRsContent) {
+                  errors.push('"## Testing Notes" section is empty (required for primary PRs)');
+                } else {
+                  warnings.push('"## Testing Notes" section is empty (allowed for secondary PRs with dependent PRs)');
+                }
+              }
+            }
+
+            // Create check result
+            const conclusion = errors.length > 0 ? 'failure' : 'success';
+            const title = errors.length > 0 
+              ? `PR template validation failed (${errors.length} error${errors.length > 1 ? 's' : ''})`
+              : hasDependentPRsContent && warnings.length > 0
+              ? `PR template validation passed (secondary PR - ${warnings.length} warning${warnings.length > 1 ? 's' : ''})`
+              : 'PR template validation passed';
+
+            let summary = '';
+
+            // Add task ID info
+            summary += `✅ PR title contains task ID(s): ${taskIds.join(', ')}\n\n`;
+
+            if (errors.length > 0) {
+              summary += '## ❌ Errors\n\n';
+              errors.forEach(err => {
+                summary += `- ${err}\n`;
+              });
+              summary += '\n';
+            }
+
+            if (warnings.length > 0) {
+              summary += '## ⚠️ Warnings\n\n';
+              warnings.forEach(warn => {
+                summary += `- ${warn}\n`;
+              });
+              summary += '\n';
+            }
+
+            if (hasDependentPRsContent) {
+              summary += 'ℹ️ This PR has dependent PRs listed, so Impact, Release Notes, and Testing Notes are optional.\n';
+            }
+
+            if (errors.length === 0 && warnings.length === 0) {
+              summary += '✅ All required sections are properly filled.\n';
+            }
+
+            summary += '\nPlease update the PR description to match the template requirements.';
+
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'PR Template Validation',
+              head_sha: pr.head.sha,
+              status: 'completed',
+              conclusion: conclusion,
+              output: {
+                title: title,
+                summary: summary,
+              },
+            });
+
+            if (errors.length > 0) {
+              core.setFailed(`PR template validation failed: ${errors.join('; ')}`);
+            } else {
+              console.log('PR template validation passed');
+            }
