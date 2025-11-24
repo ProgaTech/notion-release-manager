@@ -47,6 +47,11 @@ on:
         required: false
         type: string
         default: "Repositories"
+      github_prs_property:
+        description: "Notion property name for GitHub Pull Requests"
+        required: false
+        type: string
+        default: "GitHub Pull Requests"
       release_status_released:
         description: "Release status value for released versions"
         required: false
@@ -77,6 +82,7 @@ jobs:
       TESTING_NOTES_PROPERTY: ${{ inputs.testing_notes_property }}
       RELEASE_LABEL_PROPERTY: ${{ inputs.release_label_property }}
       REPOS_PROPERTY: ${{ inputs.repos_property }}
+      GITHUB_PRS_PROPERTY: ${{ inputs.github_prs_property }}
       RELEASE_STATUS_RELEASED: ${{ inputs.release_status_released }}
     steps:
       - name: Fetch release data and format Slack message
@@ -117,10 +123,84 @@ jobs:
               return res.json();
             }
 
-            // Helper function to extract text from Notion rich text
+            // Helper function to extract text from Notion rich text (including preserving links)
             function extractText(richText) {
-              if (!richText || !Array.isArray(richText)) return "";
-              return richText.map(rt => rt.plain_text || "").join("");
+              if (!richText) return "";
+              // Handle rich_text property type
+              if (richText.rich_text && Array.isArray(richText.rich_text)) {
+                return richText.rich_text.map(rt => rt.plain_text || "").join("");
+              }
+              // Handle array of rich text directly
+              if (Array.isArray(richText)) {
+                return richText.map(rt => rt.plain_text || "").join("");
+              }
+              // Handle plain string
+              if (typeof richText === 'string') {
+                return richText;
+              }
+              return "";
+            }
+
+            // Helper function to extract URLs from various Notion property types
+            function extractURLs(prop) {
+              if (!prop) return [];
+              const urls = [];
+              
+              // Handle URL property type
+              if (prop.type === 'url' && prop.url) {
+                urls.push(prop.url);
+              }
+              
+              // Handle rich_text with links
+              if (prop.type === 'rich_text' && prop.rich_text && Array.isArray(prop.rich_text)) {
+                for (const rt of prop.rich_text) {
+                  if (rt.href) {
+                    urls.push(rt.href);
+                  } else if (rt.plain_text) {
+                    // Try to extract URLs from plain text
+                    const urlMatches = rt.plain_text.match(/https?:\/\/[^\s]+/g);
+                    if (urlMatches) {
+                      urls.push(...urlMatches);
+                    }
+                  }
+                }
+              }
+              
+              // Handle text property (plain string)
+              if (prop.type === 'text' && prop.text) {
+                const urlMatches = prop.text.match(/https?:\/\/[^\s]+/g);
+                if (urlMatches) {
+                  urls.push(...urlMatches);
+                }
+              }
+              
+              // Handle plain string
+              if (typeof prop === 'string') {
+                const urlMatches = prop.match(/https?:\/\/[^\s]+/g);
+                if (urlMatches) {
+                  urls.push(...urlMatches);
+                }
+              }
+              
+              return urls;
+            }
+
+            // Extract PR information from GitHub URL
+            function parsePRUrl(url) {
+              if (!url) return null;
+              // Match patterns like:
+              // https://github.com/owner/repo/pull/123
+              // https://github.com/owner/repo/pull/123/
+              const match = url.match(/github\.com\/([\w\-\.]+)\/([\w\-\.]+)\/pull\/(\d+)/i);
+              if (match) {
+                return {
+                  owner: match[1],
+                  repo: match[2],
+                  number: parseInt(match[3]),
+                  url: url
+                };
+              }
+              return null;
             }
 
             // Helper function to extract title from Notion title property
@@ -230,8 +310,28 @@ jobs:
               const RELEASE_NOTES_PROP = process.env.RELEASE_NOTES_PROPERTY;
               const TESTING_NOTES_PROP = process.env.TESTING_NOTES_PROPERTY;
               const RELEASE_LABEL_PROP = process.env.RELEASE_LABEL_PROPERTY;
+              const GITHUB_PRS_PROP = process.env.GITHUB_PRS_PROPERTY || "GitHub Pull Requests";
               const TASK_ID_PROP = process.env.TASK_ID_PROPERTY;
               const TASK_ID_PREFIX = process.env.TASK_ID_PREFIX || "STR-";
+
+              // Collect unique PRs from all tasks
+              const uniquePRs = new Map(); // key: "owner/repo#number", value: {owner, repo, number, url}
+              
+              for (const task of tasks) {
+                const prProp = task.properties[GITHUB_PRS_PROP];
+                if (prProp) {
+                  const urls = extractURLs(prProp);
+                  for (const url of urls) {
+                    const prInfo = parsePRUrl(url);
+                    if (prInfo) {
+                      const key = `${prInfo.owner}/${prInfo.repo}#${prInfo.number}`;
+                      if (!uniquePRs.has(key)) {
+                        uniquePRs.set(key, prInfo);
+                      }
+                    }
+                  }
+                }
+              }
 
               // Format release date
               let dateStr = "";
@@ -251,8 +351,15 @@ jobs:
               // Build task sections
               const taskSections = tasks.map(task => {
                 const taskId = formatTaskId(task, TASK_ID_PROP, TASK_ID_PREFIX);
-                const releaseNotes = extractText(task.properties[RELEASE_NOTES_PROP]);
-                const testingNotes = extractText(task.properties[TESTING_NOTES_PROP]);
+                
+                // Extract release notes - handle both rich_text property and direct rich_text array
+                const releaseNotesProp = task.properties[RELEASE_NOTES_PROP];
+                const releaseNotes = extractText(releaseNotesProp);
+                
+                // Extract testing notes - handle both rich_text property and direct rich_text array
+                const testingNotesProp = task.properties[TESTING_NOTES_PROP];
+                const testingNotes = extractText(testingNotesProp);
+                
                 const releaseLabel = extractSelect(task.properties[RELEASE_LABEL_PROP]);
 
                 let taskText = `*${taskId}*`;
@@ -260,12 +367,20 @@ jobs:
                   taskText += ` (${releaseLabel})`;
                 }
 
-                if (releaseNotes) {
-                  taskText += `\n  • *Release Notes:* ${releaseNotes}`;
+                if (releaseNotes && releaseNotes.trim()) {
+                  // Truncate if too long (Slack has limits)
+                  const notes = releaseNotes.trim();
+                  const maxLength = 500;
+                  const displayNotes = notes.length > maxLength ? notes.substring(0, maxLength) + "..." : notes;
+                  taskText += `\n  • *Release Notes:* ${displayNotes}`;
                 }
 
-                if (testingNotes) {
-                  taskText += `\n  • *Testing Notes:* ${testingNotes}`;
+                if (testingNotes && testingNotes.trim()) {
+                  // Truncate if too long (Slack has limits)
+                  const notes = testingNotes.trim();
+                  const maxLength = 500;
+                  const displayNotes = notes.length > maxLength ? notes.substring(0, maxLength) + "..." : notes;
+                  taskText += `\n  • *Testing Notes:* ${displayNotes}`;
                 }
 
                 return taskText;
@@ -304,6 +419,28 @@ jobs:
                       text: `*Repositories:*\n${repos.join(", ")}`
                     }
                   ]
+                });
+              }
+
+              // Add PR links section if there are any PRs
+              if (uniquePRs.size > 0) {
+                const prLinks = Array.from(uniquePRs.values())
+                  .sort((a, b) => {
+                    // Sort by owner/repo, then by PR number
+                    const aKey = `${a.owner}/${a.repo}`;
+                    const bKey = `${b.owner}/${b.repo}`;
+                    if (aKey !== bKey) return aKey.localeCompare(bKey);
+                    return a.number - b.number;
+                  })
+                  .map(pr => `<${pr.url}|${pr.owner}/${pr.repo}#${pr.number}>`)
+                  .join(", ");
+                
+                blocks.push({
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: `*Related Pull Requests (${uniquePRs.size}):*\n${prLinks}`
+                  }
                 });
               }
 
