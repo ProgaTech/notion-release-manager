@@ -47,6 +47,11 @@ on:
         required: false
         type: string
         default: "Repositories"
+      github_prs_property:
+        description: "Notion property name for GitHub Pull Requests"
+        required: false
+        type: string
+        default: "GitHub Pull Requests"
       release_status_released:
         description: "Release status value for released versions"
         required: false
@@ -77,6 +82,7 @@ jobs:
       TESTING_NOTES_PROPERTY: ${{ inputs.testing_notes_property }}
       RELEASE_LABEL_PROPERTY: ${{ inputs.release_label_property }}
       REPOS_PROPERTY: ${{ inputs.repos_property }}
+      GITHUB_PRS_PROPERTY: ${{ inputs.github_prs_property }}
       RELEASE_STATUS_RELEASED: ${{ inputs.release_status_released }}
     steps:
       - name: Fetch release data and format Slack message
@@ -171,6 +177,52 @@ jobs:
               return uniqueIdProp.unique_id?.number || null;
             }
 
+            // Helper function to extract URLs from various Notion property types
+            function extractURLs(prop) {
+              if (!prop) return [];
+              const urls = [];
+
+              console.log("prop", prop);
+              
+              // Handle URL property type
+              if (prop.type === 'url' && prop.url) {
+                urls.push(prop.url);
+              }
+              
+              // Handle rich_text with links
+              if (prop.type === 'rich_text' && prop.rich_text && Array.isArray(prop.rich_text)) {
+                for (const rt of prop.rich_text) {
+                  if (rt.href) {
+                    urls.push(rt.href);
+                  } else if (rt.plain_text) {
+                    // Try to extract URLs from plain text
+                    const urlMatches = rt.plain_text.match(/https?:\/\/[^\s]+/g);
+                    if (urlMatches) {
+                      urls.push(...urlMatches);
+                    }
+                  }
+                }
+              }
+              
+              // Handle text property (plain string)
+              if (prop.type === 'text' && prop.text) {
+                const urlMatches = prop.text.match(/https?:\/\/[^\s]+/g);
+                if (urlMatches) {
+                  urls.push(...urlMatches);
+                }
+              }
+              
+              // Handle plain string
+              if (typeof prop === 'string') {
+                const urlMatches = prop.match(/https?:\/\/[^\s]+/g);
+                if (urlMatches) {
+                  urls.push(...urlMatches);
+                }
+              }
+              
+              return urls;
+            }
+
             // Get release by version or latest released version (only "Released" status)
             async function getRelease(version) {
               const statusReleased = process.env.RELEASE_STATUS_RELEASED;
@@ -240,6 +292,7 @@ jobs:
               const RELEASE_NOTES_PROP = process.env.RELEASE_NOTES_PROPERTY;
               const TESTING_NOTES_PROP = process.env.TESTING_NOTES_PROPERTY;
               const RELEASE_LABEL_PROP = process.env.RELEASE_LABEL_PROPERTY;
+              const GITHUB_PRS_PROP = process.env.GITHUB_PRS_PROPERTY || "GitHub Pull Requests";
               const TASK_ID_PROP = process.env.TASK_ID_PROPERTY;
               const TASK_ID_PREFIX = process.env.TASK_ID_PREFIX || "STR-";
 
@@ -271,8 +324,41 @@ jobs:
                 const testingNotes = extractText(testingNotesProp);
                 
                 const releaseLabel = extractSelect(task.properties[RELEASE_LABEL_PROP]);
+                
+                // Extract PR URLs from GitHub Pull Requests property
+                const prProp = task.properties[GITHUB_PRS_PROP];
+                const prUrls = prProp ? extractURLs(prProp) : [];
+                
+                // Parse PR URLs to extract PR numbers for better display
+                const prInfo = prUrls.map(url => {
+                  const match = url.match(/github\.com\/([\w\-\.]+)\/([\w\-\.]+)\/pull\/(\d+)/i);
+                  if (match) {
+                    return {
+                      url: url,
+                      owner: match[1],
+                      repo: match[2],
+                      number: parseInt(match[3]),
+                      display: `${match[2]}#${match[3]}`
+                    };
+                  }
+                  return { url: url, display: "PR" };
+                });
+                
+                // Make task ID clickable if PR URLs are available
+                let taskIdDisplay = `*${taskId}*`;
+                if (prInfo.length > 0) {
+                  // Use the first PR URL to make the task ID clickable
+                  const firstPR = prInfo[0];
+                  taskIdDisplay = `<${firstPR.url}|*${taskId}*>`;
+                  
+                  // If there are multiple PRs, add them as additional links
+                  if (prInfo.length > 1) {
+                    const additionalPRs = prInfo.slice(1).map(pr => `<${pr.url}|${pr.display}>`).join(", ");
+                    taskIdDisplay += ` (${additionalPRs})`;
+                  }
+                }
 
-                let taskText = `*${taskId}*`;
+                let taskText = taskIdDisplay;
                 if (releaseLabel) {
                   taskText += ` (${releaseLabel})`;
                 }
