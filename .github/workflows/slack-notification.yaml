@@ -47,11 +47,10 @@ on:
         required: false
         type: string
         default: "Repositories"
-      github_prs_property:
-        description: "Notion property name for GitHub Pull Requests"
+      github_org:
+        description: "GitHub organization name to search for PRs (defaults to repository owner)"
         required: false
         type: string
-        default: "GitHub Pull Requests"
       release_status_released:
         description: "Release status value for released versions"
         required: false
@@ -82,7 +81,7 @@ jobs:
       TESTING_NOTES_PROPERTY: ${{ inputs.testing_notes_property }}
       RELEASE_LABEL_PROPERTY: ${{ inputs.release_label_property }}
       REPOS_PROPERTY: ${{ inputs.repos_property }}
-      GITHUB_PRS_PROPERTY: ${{ inputs.github_prs_property }}
+      GITHUB_ORG: ${{ inputs.github_org }}
       RELEASE_STATUS_RELEASED: ${{ inputs.release_status_released }}
     steps:
       - name: Fetch release data and format Slack message
@@ -165,12 +164,6 @@ jobs:
               return dateProp.date.start;
             }
 
-            // Helper function to extract relation IDs
-            function extractRelationIds(relationProp) {
-              if (!relationProp || !relationProp.relation || !Array.isArray(relationProp.relation)) return [];
-              return relationProp.relation.map(r => r.id);
-            }
-
             // Helper function to extract unique ID (for task ID property)
             function extractUniqueId(uniqueIdProp) {
               if (!uniqueIdProp || uniqueIdProp.type !== 'unique_id') return null;
@@ -181,8 +174,6 @@ jobs:
             function extractURLs(prop) {
               if (!prop) return [];
               const urls = [];
-
-              console.log("prop", prop);
               
               // Handle URL property type
               if (prop.type === 'url' && prop.url) {
@@ -221,6 +212,47 @@ jobs:
               }
               
               return urls;
+            }
+
+            // Search GitHub for PRs mentioning a task ID
+            async function searchPRsForTaskId(taskId, org) {
+              try {
+                // Search for PRs in the organization that mention the task ID
+                // Search in title and body, only merged PRs
+                const query = `org:${org} type:pr "${taskId}" is:merged`;
+                
+                const { data } = await github.rest.search.issuesAndPullRequests({
+                  q: query,
+                  per_page: 100
+                });
+                
+                // Extract PR URLs from search results
+                const prUrls = data.items.map(item => item.html_url);
+                return prUrls;
+              } catch (e) {
+                console.log(`Error searching for PRs with task ID ${taskId}: ${e.message}`);
+                return [];
+              }
+            }
+
+            // Batch search for PRs for multiple task IDs (more efficient)
+            async function searchPRsForTaskIds(taskIds, org) {
+              const taskIdToPRs = new Map();
+              
+              // Search for all task IDs in parallel
+              const searchPromises = taskIds.map(async (taskId) => {
+                const prUrls = await searchPRsForTaskId(taskId, org);
+                return { taskId, prUrls };
+              });
+              
+              const results = await Promise.all(searchPromises);
+              
+              // Build map of task ID to PR URLs
+              for (const { taskId, prUrls } of results) {
+                taskIdToPRs.set(taskId, prUrls);
+              }
+              
+              return taskIdToPRs;
             }
 
             // Get release by version or latest released version (only "Released" status)
@@ -283,7 +315,7 @@ jobs:
             }
 
             // Format Slack message payload
-            function formatSlackMessage(release, tasks) {
+            async function formatSlackMessage(release, tasks) {
               const version = extractTitle(release.properties.Version);
               const status = extractSelect(release.properties.Status);
               const releaseDate = extractDate(release.properties["Release Date"]);
@@ -292,9 +324,11 @@ jobs:
               const RELEASE_NOTES_PROP = process.env.RELEASE_NOTES_PROPERTY;
               const TESTING_NOTES_PROP = process.env.TESTING_NOTES_PROPERTY;
               const RELEASE_LABEL_PROP = process.env.RELEASE_LABEL_PROPERTY;
-              const GITHUB_PRS_PROP = process.env.GITHUB_PRS_PROPERTY || "GitHub Pull Requests";
               const TASK_ID_PROP = process.env.TASK_ID_PROPERTY;
               const TASK_ID_PREFIX = process.env.TASK_ID_PREFIX || "STR-";
+              
+              // Determine GitHub organization to search
+              const githubOrg = process.env.GITHUB_ORG || context.repo.owner;
 
               // Format release date
               let dateStr = "";
@@ -311,8 +345,12 @@ jobs:
                 }
               }
 
+              // First, collect all task IDs and search for PRs in batch
+              const taskIds = tasks.map(task => formatTaskId(task, TASK_ID_PROP, TASK_ID_PREFIX));
+              const taskIdToPRs = await searchPRsForTaskIds(taskIds, githubOrg);
+              
               // Build task sections
-              const taskSections = tasks.map(task => {
+              const taskSections = tasks.map((task) => {
                 const taskId = formatTaskId(task, TASK_ID_PROP, TASK_ID_PREFIX);
                 
                 // Extract release notes - handle both rich_text property and direct rich_text array
@@ -325,9 +363,8 @@ jobs:
                 
                 const releaseLabel = extractSelect(task.properties[RELEASE_LABEL_PROP]);
                 
-                // Extract PR URLs from GitHub Pull Requests property
-                const prProp = task.properties[GITHUB_PRS_PROP];
-                const prUrls = prProp ? extractURLs(prProp) : [];
+                // Get PR URLs from GitHub search results
+                const prUrls = taskIdToPRs.get(taskId) || [];
                 
                 // Parse PR URLs to extract PR numbers for better display
                 const prInfo = prUrls.map(url => {
@@ -380,7 +417,7 @@ jobs:
                 }
 
                 return taskText;
-              });
+              }));
 
               // Build Slack message blocks
               const blocks = [
@@ -475,7 +512,7 @@ jobs:
               const tasks = await getReleaseTasks(release.id);
               console.log(`Found ${tasks.length} tasks in release ${version}`);
 
-              const message = formatSlackMessage(release, tasks);
+              const message = await formatSlackMessage(release, tasks);
               
               // Output the message payload for the next step
               core.setOutput("slack_payload", JSON.stringify(message));
