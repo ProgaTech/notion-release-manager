@@ -417,7 +417,7 @@ jobs:
                 }
 
                 return taskText;
-              }));
+              });
 
               // Build Slack message blocks
               const blocks = [
