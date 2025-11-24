@@ -1,0 +1,382 @@
+name: Slack Release Notification
+
+on:
+  workflow_call:
+    inputs:
+      release_version:
+        description: "Release version to notify about (e.g., '1.10.0'). If not provided, uses the latest released version."
+        required: false
+        type: string
+      task_id_property:
+        description: "Notion property name for task ID"
+        required: false
+        type: string
+        default: "ID"
+      task_id_prefix:
+        description: "Prefix for task IDs (e.g., 'STR-' for STR-123 format)"
+        required: false
+        type: string
+        default: "STR-"
+      release_stage_property:
+        description: "Notion property name for release stage"
+        required: false
+        type: string
+        default: "Status"
+      release_property:
+        description: "Notion property name for release relation"
+        required: false
+        type: string
+        default: "Release"
+      release_notes_property:
+        description: "Notion property name for release notes"
+        required: false
+        type: string
+        default: "Release Notes"
+      testing_notes_property:
+        description: "Notion property name for testing notes"
+        required: false
+        type: string
+        default: "Testing Notes"
+      release_label_property:
+        description: "Notion property name for release labels"
+        required: false
+        type: string
+        default: "Release Label"
+      repos_property:
+        description: "Notion property name for tracking repos in a release"
+        required: false
+        type: string
+        default: "Repositories"
+      release_status_released:
+        description: "Release status value for released versions"
+        required: false
+        type: string
+        default: "Released"
+    secrets:
+      NOTION_API_TOKEN:
+        required: true
+      NOTION_TASKS_DATABASE_ID:
+        required: true
+      NOTION_RELEASES_DATABASE_ID:
+        required: true
+      SLACK_WEBHOOK_URL:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  send-slack-notification:
+    runs-on: ubuntu-latest
+    env:
+      TASK_ID_PROPERTY: ${{ inputs.task_id_property }}
+      TASK_ID_PREFIX: ${{ inputs.task_id_prefix }}
+      RELEASE_STAGE_PROPERTY: ${{ inputs.release_stage_property }}
+      RELEASE_PROPERTY: ${{ inputs.release_property }}
+      RELEASE_NOTES_PROPERTY: ${{ inputs.release_notes_property }}
+      TESTING_NOTES_PROPERTY: ${{ inputs.testing_notes_property }}
+      RELEASE_LABEL_PROPERTY: ${{ inputs.release_label_property }}
+      REPOS_PROPERTY: ${{ inputs.repos_property }}
+      RELEASE_STATUS_RELEASED: ${{ inputs.release_status_released }}
+    steps:
+      - name: Fetch release data and format Slack message
+        id: format_message
+        uses: actions/github-script@v6
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const notionApi = "https://api.notion.com/v1";
+            const notionToken = "${{ secrets.NOTION_API_TOKEN }}";
+            const tasksDB = "${{ secrets.NOTION_TASKS_DATABASE_ID }}";
+            const releasesDB = "${{ secrets.NOTION_RELEASES_DATABASE_ID }}";
+
+            const headers = {
+              "Authorization": `Bearer ${notionToken}`,
+              "Notion-Version": "2022-06-28",
+              "Content-Type": "application/json"
+            };
+
+            async function queryNotionDB(db, body) {
+              const res = await fetch(`${notionApi}/databases/${db}/query`, {
+                method: "POST",
+                headers,
+                body: JSON.stringify(body)
+              });
+              if (!res.ok) throw new Error(`Query failed: ${res.status} ${await res.text()}`);
+              return res.json();
+            }
+
+            async function getPage(pageId) {
+              const res = await fetch(`${notionApi}/pages/${pageId}`, {
+                method: "GET",
+                headers
+              });
+              if (!res.ok) throw new Error(`Get page failed: ${res.status} ${await res.text()}`);
+              return res.json();
+            }
+
+            // Helper function to extract text from Notion rich text
+            function extractText(richText) {
+              if (!richText || !Array.isArray(richText)) return "";
+              return richText.map(rt => rt.plain_text || "").join("");
+            }
+
+            // Helper function to extract title from Notion title property
+            function extractTitle(titleProp) {
+              if (!titleProp || !titleProp.title || !Array.isArray(titleProp.title)) return "";
+              return titleProp.title.map(t => t.plain_text || "").join("");
+            }
+
+            // Helper function to extract select value
+            function extractSelect(selectProp) {
+              if (!selectProp || !selectProp.select) return null;
+              return selectProp.select.name;
+            }
+
+            // Helper function to extract multi-select values
+            function extractMultiSelect(multiSelectProp) {
+              if (!multiSelectProp || !multiSelectProp.multi_select || !Array.isArray(multiSelectProp.multi_select)) return [];
+              return multiSelectProp.multi_select.map(ms => ms.name);
+            }
+
+            // Helper function to extract date
+            function extractDate(dateProp) {
+              if (!dateProp || !dateProp.date) return null;
+              return dateProp.date.start;
+            }
+
+            // Helper function to extract relation IDs
+            function extractRelationIds(relationProp) {
+              if (!relationProp || !relationProp.relation || !Array.isArray(relationProp.relation)) return [];
+              return relationProp.relation.map(r => r.id);
+            }
+
+            // Helper function to extract unique ID (for task ID property)
+            function extractUniqueId(uniqueIdProp) {
+              if (!uniqueIdProp || uniqueIdProp.type !== 'unique_id') return null;
+              return uniqueIdProp.unique_id?.number || null;
+            }
+
+            // Get release by version or latest released version (only "Released" status)
+            async function getRelease(version) {
+              const statusReleased = process.env.RELEASE_STATUS_RELEASED;
+              
+              if (version) {
+                // Get specific release and validate it's in "Released" status
+                const found = await queryNotionDB(releasesDB, {
+                  filter: {
+                    and: [
+                      { property: "Version", title: { equals: version } },
+                      { property: "Status", select: { equals: statusReleased } }
+                    ]
+                  }
+                });
+                if (!found.results.length) {
+                  throw new Error(`Release ${version} not found or not in "Released" status`);
+                }
+                return found.results[0];
+              } else {
+                // Get latest released version (only "Released" status, not "Partially Released")
+                const res = await queryNotionDB(releasesDB, {
+                  filter: {
+                    property: "Status",
+                    select: { equals: statusReleased }
+                  },
+                  sorts: [{ property: "Version", direction: "descending" }]
+                });
+                
+                if (!res.results.length) {
+                  throw new Error("No released versions found in Notion");
+                }
+                return res.results[0];
+              }
+            }
+
+            // Get tasks related to a release
+            async function getReleaseTasks(releaseId) {
+              const RELEASE_PROP = process.env.RELEASE_PROPERTY;
+              const tasks = await queryNotionDB(tasksDB, {
+                filter: {
+                  property: RELEASE_PROP,
+                  relation: { contains: releaseId }
+                }
+              });
+              return tasks.results;
+            }
+
+            // Format task ID (e.g., 123 -> STR-123)
+            function formatTaskId(task, taskIdProperty, prefix) {
+              const idProp = task.properties[taskIdProperty];
+              if (idProp.type === 'unique_id') {
+                const numericId = extractUniqueId(idProp);
+                if (numericId) {
+                  return `${prefix}${numericId}`;
+                }
+              } else if (idProp.type === 'title') {
+                return extractTitle(idProp);
+              }
+              return "Unknown";
+            }
+
+            // Format Slack message payload
+            function formatSlackMessage(release, tasks) {
+              const version = extractTitle(release.properties.Version);
+              const status = extractSelect(release.properties.Status);
+              const releaseDate = extractDate(release.properties["Release Date"]);
+              const repos = extractMultiSelect(release.properties[process.env.REPOS_PROPERTY || "Repositories"]);
+
+              const RELEASE_NOTES_PROP = process.env.RELEASE_NOTES_PROPERTY;
+              const TESTING_NOTES_PROP = process.env.TESTING_NOTES_PROPERTY;
+              const RELEASE_LABEL_PROP = process.env.RELEASE_LABEL_PROPERTY;
+              const TASK_ID_PROP = process.env.TASK_ID_PROPERTY;
+              const TASK_ID_PREFIX = process.env.TASK_ID_PREFIX || "STR-";
+
+              // Format release date
+              let dateStr = "";
+              if (releaseDate) {
+                try {
+                  const date = new Date(releaseDate);
+                  dateStr = date.toLocaleDateString('en-US', { 
+                    year: 'numeric', 
+                    month: 'long', 
+                    day: 'numeric' 
+                  });
+                } catch (e) {
+                  dateStr = releaseDate;
+                }
+              }
+
+              // Build task sections
+              const taskSections = tasks.map(task => {
+                const taskId = formatTaskId(task, TASK_ID_PROP, TASK_ID_PREFIX);
+                const releaseNotes = extractText(task.properties[RELEASE_NOTES_PROP]);
+                const testingNotes = extractText(task.properties[TESTING_NOTES_PROP]);
+                const releaseLabel = extractSelect(task.properties[RELEASE_LABEL_PROP]);
+
+                let taskText = `*${taskId}*`;
+                if (releaseLabel) {
+                  taskText += ` (${releaseLabel})`;
+                }
+
+                if (releaseNotes) {
+                  taskText += `\n  • *Release Notes:* ${releaseNotes}`;
+                }
+
+                if (testingNotes) {
+                  taskText += `\n  • *Testing Notes:* ${testingNotes}`;
+                }
+
+                return taskText;
+              });
+
+              // Build Slack message blocks
+              const blocks = [
+                {
+                  type: "header",
+                  text: {
+                    type: "plain_text",
+                    text: `🚀 Release ${version}`
+                  }
+                },
+                {
+                  type: "section",
+                  fields: [
+                    {
+                      type: "mrkdwn",
+                      text: `*Status:*\n${status}`
+                    },
+                    {
+                      type: "mrkdwn",
+                      text: `*Release Date:*\n${dateStr || "Not set"}`
+                    }
+                  ]
+                }
+              ];
+
+              if (repos.length > 0) {
+                blocks.push({
+                  type: "section",
+                  fields: [
+                    {
+                      type: "mrkdwn",
+                      text: `*Repositories:*\n${repos.join(", ")}`
+                    }
+                  ]
+                });
+              }
+
+              if (tasks.length > 0) {
+                blocks.push({
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: `*Tasks in this release (${tasks.length}):*`
+                  }
+                });
+
+                // Split tasks into chunks to avoid Slack block limits (50 blocks max)
+                const maxTasksPerBlock = 10;
+                for (let i = 0; i < taskSections.length; i += maxTasksPerBlock) {
+                  const taskChunk = taskSections.slice(i, i + maxTasksPerBlock);
+                  blocks.push({
+                    type: "section",
+                    text: {
+                      type: "mrkdwn",
+                      text: taskChunk.join("\n\n")
+                    }
+                  });
+                }
+              } else {
+                blocks.push({
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: "*No tasks found in this release.*"
+                  }
+                });
+              }
+
+              // Add divider
+              blocks.push({
+                type: "divider"
+              });
+
+              // Return payload for slackapi/slack-github-action
+              return {
+                blocks: blocks,
+                text: `Release ${version} - ${status}` // Fallback text for notifications
+              };
+            }
+
+            // Main execution
+            try {
+              const releaseVersion = process.env.RELEASE_VERSION;
+              console.log(releaseVersion 
+                ? `Fetching release: ${releaseVersion}` 
+                : "Fetching latest released version");
+
+              const release = await getRelease(releaseVersion);
+              const version = extractTitle(release.properties.Version);
+              console.log(`Found release: ${version}`);
+
+              const tasks = await getReleaseTasks(release.id);
+              console.log(`Found ${tasks.length} tasks in release ${version}`);
+
+              const message = formatSlackMessage(release, tasks);
+              
+              // Output the message payload for the next step
+              core.setOutput("slack_payload", JSON.stringify(message));
+              console.log(`Formatted Slack message for release ${version}`);
+            } catch (error) {
+              console.error(`Error formatting Slack message: ${error.message}`);
+              core.setFailed(error.message);
+            }
+
+      - name: Send Slack notification
+        uses: slackapi/slack-github-action@v2.1.0
+        with:
+          payload: ${{ steps.format_message.outputs.slack_payload }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
