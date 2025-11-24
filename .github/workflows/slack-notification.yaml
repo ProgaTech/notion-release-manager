@@ -47,11 +47,6 @@ on:
         required: false
         type: string
         default: "Repositories"
-      github_prs_property:
-        description: "Notion property name for GitHub Pull Requests"
-        required: false
-        type: string
-        default: "GitHub Pull Requests"
       release_status_released:
         description: "Release status value for released versions"
         required: false
@@ -82,7 +77,6 @@ jobs:
       TESTING_NOTES_PROPERTY: ${{ inputs.testing_notes_property }}
       RELEASE_LABEL_PROPERTY: ${{ inputs.release_label_property }}
       REPOS_PROPERTY: ${{ inputs.repos_property }}
-      GITHUB_PRS_PROPERTY: ${{ inputs.github_prs_property }}
       RELEASE_STATUS_RELEASED: ${{ inputs.release_status_released }}
     steps:
       - name: Fetch release data and format Slack message
@@ -141,68 +135,6 @@ jobs:
               return "";
             }
 
-            // Helper function to extract URLs from various Notion property types
-            function extractURLs(prop) {
-              if (!prop) return [];
-              const urls = [];
-              
-              // Handle URL property type
-              if (prop.type === 'url' && prop.url) {
-                urls.push(prop.url);
-              }
-              
-              // Handle rich_text with links
-              if (prop.type === 'rich_text' && prop.rich_text && Array.isArray(prop.rich_text)) {
-                for (const rt of prop.rich_text) {
-                  if (rt.href) {
-                    urls.push(rt.href);
-                  } else if (rt.plain_text) {
-                    // Try to extract URLs from plain text
-                    const urlMatches = rt.plain_text.match(/https?:\/\/[^\s]+/g);
-                    if (urlMatches) {
-                      urls.push(...urlMatches);
-                    }
-                  }
-                }
-              }
-              
-              // Handle text property (plain string)
-              if (prop.type === 'text' && prop.text) {
-                const urlMatches = prop.text.match(/https?:\/\/[^\s]+/g);
-                if (urlMatches) {
-                  urls.push(...urlMatches);
-                }
-              }
-              
-              // Handle plain string
-              if (typeof prop === 'string') {
-                const urlMatches = prop.match(/https?:\/\/[^\s]+/g);
-                if (urlMatches) {
-                  urls.push(...urlMatches);
-                }
-              }
-              
-              return urls;
-            }
-
-            // Extract PR information from GitHub URL
-            function parsePRUrl(url) {
-              if (!url) return null;
-              // Match patterns like:
-              // https://github.com/owner/repo/pull/123
-              // https://github.com/owner/repo/pull/123/
-              const match = url.match(/github\.com\/([\w\-\.]+)\/([\w\-\.]+)\/pull\/(\d+)/i);
-              if (match) {
-                return {
-                  owner: match[1],
-                  repo: match[2],
-                  number: parseInt(match[3]),
-                  url: url
-                };
-              }
-              return null;
-            }
-
             // Helper function to extract title from Notion title property
             function extractTitle(titleProp) {
               if (!titleProp || !titleProp.title || !Array.isArray(titleProp.title)) return "";
@@ -244,17 +176,15 @@ jobs:
               const statusReleased = process.env.RELEASE_STATUS_RELEASED;
               
               if (version) {
-                // Get specific release and validate it's in "Released" status
+                // Get specific release by version (any status - allows placeholders like "Next Release")
                 const found = await queryNotionDB(releasesDB, {
                   filter: {
-                    and: [
-                      { property: "Version", title: { equals: version } },
-                      { property: "Status", select: { equals: statusReleased } }
-                    ]
+                    property: "Version",
+                    title: { equals: version }
                   }
                 });
                 if (!found.results.length) {
-                  throw new Error(`Release ${version} not found or not in "Released" status`);
+                  throw new Error(`Release "${version}" not found in Notion`);
                 }
                 return found.results[0];
               } else {
@@ -310,28 +240,8 @@ jobs:
               const RELEASE_NOTES_PROP = process.env.RELEASE_NOTES_PROPERTY;
               const TESTING_NOTES_PROP = process.env.TESTING_NOTES_PROPERTY;
               const RELEASE_LABEL_PROP = process.env.RELEASE_LABEL_PROPERTY;
-              const GITHUB_PRS_PROP = process.env.GITHUB_PRS_PROPERTY || "GitHub Pull Requests";
               const TASK_ID_PROP = process.env.TASK_ID_PROPERTY;
               const TASK_ID_PREFIX = process.env.TASK_ID_PREFIX || "STR-";
-
-              // Collect unique PRs from all tasks
-              const uniquePRs = new Map(); // key: "owner/repo#number", value: {owner, repo, number, url}
-              
-              for (const task of tasks) {
-                const prProp = task.properties[GITHUB_PRS_PROP];
-                if (prProp) {
-                  const urls = extractURLs(prProp);
-                  for (const url of urls) {
-                    const prInfo = parsePRUrl(url);
-                    if (prInfo) {
-                      const key = `${prInfo.owner}/${prInfo.repo}#${prInfo.number}`;
-                      if (!uniquePRs.has(key)) {
-                        uniquePRs.set(key, prInfo);
-                      }
-                    }
-                  }
-                }
-              }
 
               // Format release date
               let dateStr = "";
@@ -419,28 +329,6 @@ jobs:
                       text: `*Repositories:*\n${repos.join(", ")}`
                     }
                   ]
-                });
-              }
-
-              // Add PR links section if there are any PRs
-              if (uniquePRs.size > 0) {
-                const prLinks = Array.from(uniquePRs.values())
-                  .sort((a, b) => {
-                    // Sort by owner/repo, then by PR number
-                    const aKey = `${a.owner}/${a.repo}`;
-                    const bKey = `${b.owner}/${b.repo}`;
-                    if (aKey !== bKey) return aKey.localeCompare(bKey);
-                    return a.number - b.number;
-                  })
-                  .map(pr => `<${pr.url}|${pr.owner}/${pr.repo}#${pr.number}>`)
-                  .join(", ");
-                
-                blocks.push({
-                  type: "section",
-                  text: {
-                    type: "mrkdwn",
-                    text: `*Related Pull Requests (${uniquePRs.size}):*\n${prLinks}`
-                  }
                 });
               }
 
