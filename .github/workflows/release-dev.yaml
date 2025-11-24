@@ -409,8 +409,15 @@ jobs:
               for (const notionKey of pr.notionIds) {
                 if (!notionKey) continue;
                 try {
+                  // Extract numeric part from the ID (e.g., "STR-2534" -> 2534)
+                  // This is needed because auto_increment_id properties store only the number
+                  const numericId = Number((notionKey.match(/\d+/) || [])[0] || 0);
+                  if (!numericId) {
+                    console.log(`Could not extract numeric ID from ${notionKey}`);
+                    continue;
+                  }
                   const found = await queryNotionDB(tasksDB, {
-                    filter: { property: TASK_ID_PROPERTY, title: { equals: notionKey } }
+                    filter: { property: TASK_ID_PROPERTY, unique_id: { equals: numericId } }
                   });
                   if (!found.results.length) {
                     console.log(`Task ${notionKey} not found`);
@@ -422,10 +429,10 @@ jobs:
                   };
 
                   if (allMerged) {
-                    props[RELEASE_STAGE_PROP] = { select: { name: DEV_STAGE } };
+                    props[RELEASE_STAGE_PROP] = { status: { name: DEV_STAGE } };
                     console.log(`Task ${notionKey}: All PRs merged → ${DEV_STAGE}`);
                   } else {
-                    props[RELEASE_STAGE_PROP] = { select: { name: PARTIAL_STAGE } };
+                    props[RELEASE_STAGE_PROP] = { status: { name: PARTIAL_STAGE } };
                     console.log(`Task ${notionKey}: ${pendingPRs.length} PR(s) pending → ${PARTIAL_STAGE}`);
                   }
 

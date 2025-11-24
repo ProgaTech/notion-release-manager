@@ -6,10 +6,11 @@ Reusable GitHub Actions workflows that automatically sync your PRs with Notion d
 
 ## 📋 What It Does
 
-This package provides two reusable workflows that you integrate into your repository:
+This package provides three reusable workflows that you integrate into your repository:
 
 1. **`release-dev.yaml`** - Updates Notion when PRs are merged to your development branch
 2. **`release-main.yaml`** - Promotes tasks to production and creates versioned releases
+3. **`pr-template-validation.yaml`** - Validates PR descriptions match the template and blocks merges if requirements aren't met
 
 ### Development Workflow (`release-dev.yaml`)
 
@@ -31,10 +32,29 @@ When a PR is merged to your dev branch, this workflow:
 When code is pushed to your main branch, this workflow:
 
 - Gets the latest released version from Notion (source of truth)
-- Calculates the next version based on Release Labels in "Next Release" tasks
-- Promotes all "On Dev" tasks from "Next Release" to the new version
+- Calculates the next version based on Release Labels in "Next Release" tasks (shared across all repos)
+- Creates or finds the release in Notion and tracks which repositories are part of it
+- Promotes all "On Dev" tasks from "Next Release" to the new version (only once, by first repo)
 - Sets Release Stage to "On Prod"
-- Creates a Git tag `vX.Y.Z`
+- Creates a Git tag `vX.Y.Z` for this repository (only if not already tagged)
+- Updates release status: "Partially Released" when some repos are released, "Released" when all repos are released
+
+### PR Template Validation Workflow (`pr-template-validation.yaml`)
+
+When a PR is opened, edited, or marked ready for review, this workflow:
+
+- Validates that the PR title contains at least one task ID (e.g., `STR-123`)
+- Checks that the PR description includes all required sections:
+  - **Description** - Always required
+  - **Impact** - Required for primary PRs, optional for secondary PRs
+  - **Release Notes** - Required for primary PRs, optional for secondary PRs
+  - **Testing Notes** - Required for primary PRs, optional for secondary PRs
+- Verifies that at least one Impact checkbox is selected (Major/Minor/Patch) for primary PRs
+- Detects secondary PRs (PRs with dependent PRs listed) and makes Impact, Release Notes, and Testing Notes optional
+- Creates a GitHub check status that **blocks merging** if validation fails
+- Provides clear error messages indicating what needs to be fixed
+
+**Secondary PR Detection:** If a PR has entries in the "Dependent PRs" section, it's considered a secondary PR. For secondary PRs, Impact, Release Notes, and Testing Notes are optional since those details should be in the master/primary PR.
 
 ---
 
@@ -61,11 +81,12 @@ The workflows use the existing **"GitHub Proga"** Notion integration. Make sure 
 
 **Releases Database** - Create a database with these properties:
 
-| Property     | Type   | Required | Example         |
-| ------------ | ------ | -------- | --------------- |
-| Version      | Title  | Yes      | 1.10.0          |
-| Status       | Select | Yes      | Next / Released |
-| Release Date | Date   | No       | 2025-11-10      |
+| Property     | Type         | Required | Example                                               |
+| ------------ | ------------ | -------- | ----------------------------------------------------- |
+| Version      | Title        | Yes      | 1.10.0                                                |
+| Status       | Select       | Yes      | Next / Partially Released / Released                  |
+| Release Date | Date         | No       | 2025-11-10                                            |
+| Repositories | Multi-select | Yes      | api, ui (tracks which repos are part of this release) |
 
 **Important:** Share both databases with the "GitHub Proga" Notion integration.
 
@@ -87,7 +108,51 @@ Add these secrets:
 https://www.notion.so/workspace/32-char-database-id?v=...
 ```
 
-### Step 3: Create Your Deployment Workflows
+### Step 3: Set Up PR Template Validation (Recommended)
+
+Add PR template validation to automatically check PRs when they're opened or updated. This ensures all PRs follow the required template format.
+
+**Option A: Automatic validation on PR events** (Recommended)
+
+The workflow runs automatically when triggered by PR events. Simply create a workflow file that references it:
+
+**`.github/workflows/validate-pr.yaml`**:
+
+```yaml
+name: Validate PR Template
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, ready_for_review]
+
+permissions:
+  pull-requests: write
+  checks: write
+  contents: read
+
+jobs:
+  validate:
+    uses: org-name/repo-name/.github/workflows/pr-template-validation.yaml@main
+    with:
+      task_id_pattern: "STR-\\d+" # Optional: customize task ID pattern
+```
+
+**Option B: Call as reusable workflow from another workflow**
+
+You can also call the validation workflow from other workflows:
+
+```yaml
+jobs:
+  validate-pr:
+    uses: org-name/repo-name/.github/workflows/pr-template-validation.yaml@main
+    with:
+      pr_number: ${{ github.event.pull_request.number }}
+      task_id_pattern: "STR-\\d+" # Optional
+```
+
+**Note:** Replace `org-name/repo-name` with the actual organization and repository name where the workflows are stored (e.g., `ProgaTech/notion-release-manager`).
+
+### Step 4: Create Your Deployment Workflows
 
 Create workflows in your repository that call these reusable workflows from the central repository. Replace `org-name/repo-name` with the actual organization and repository name where the workflows are stored (e.g., `ProgaTech/release-automation-demo`).
 
@@ -166,6 +231,9 @@ jobs:
   promote-release:
     needs: deploy
     uses: org-name/repo-name/.github/workflows/release-main.yaml@main
+    with:
+      repo_identifier: "api" # Required: identifier for this repo (e.g., "api", "ui", "web")
+      required_repos: "api,ui" # Optional: comma-separated list of repo identifiers that must be included for a release to be complete (e.g., "api,ui" or "api,ui,web")
     secrets:
       NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
       NOTION_TASKS_DATABASE_ID: ${{ secrets.NOTION_TASKS_DATABASE_ID }}
@@ -186,37 +254,56 @@ jobs:
 
    The workflow extracts task IDs using a regex pattern (default: `STR-\d+`). You can customize this via workflow inputs.
 
-2. **Add Release Notes section** (optional):
+   **⚠️ Important:** The PR template validation workflow will **block merging** if your PR title doesn't contain at least one task ID matching the pattern.
+
+2. **Fill in the PR description using the template:**
+
+   The PR template validation workflow ensures your PR description includes all required sections. Here's what's required:
+
+   **Required for all PRs:**
+
+   - **Description** - Brief description of changes
+
+   **Required for primary PRs (optional for secondary PRs with dependent PRs):**
+
+   - **Impact** - Select one: Major, Minor, or Patch
+   - **Release Notes** - What users should know about this change
+   - **Testing Notes** - How this PR was tested
+
+   **Example PR description:**
 
    ```markdown
-   ## Release Notes
+   ## Description
 
-   This PR adds payment processing functionality with support for credit cards and PayPal.
-   ```
+   <!-- Provide a brief description of the changes in this PR -->
 
-3. **Add Testing Notes section** (optional):
+   Adds payment processing functionality with support for credit cards and PayPal.
 
-   ```markdown
-   ## Testing Notes
-
-   - Test credit card payment flow
-   - Verify PayPal integration
-   - Check error handling for declined cards
-   ```
-
-4. **Add Impact section** to specify version bump (optional):
-
-   ```markdown
    ## Impact
 
-   - [ ] **Major** - Breaking changes
-   - [x] **Minor** - New features
-   - [ ] **Patch** - Bug fixes
+   <!-- Select the version strategy for this PR -->
+
+   - [ ] **Major** - Breaking changes, incompatible API changes
+   - [x] **Minor** - New features, backward-compatible additions
+   - [ ] **Patch** - Bug fixes, backward-compatible changes
+
+   ## Release Notes
+
+   <!-- Describe what users should know about this change. This will be synced to Notion. -->
+
+   Added new payment processing flow with support for credit cards and PayPal.
+
+   ## Testing Notes
+
+   <!-- Describe how this PR was tested and any important testing considerations -->
+
+   - Tested credit card payment flow
+   - Verified PayPal integration
+   - Checked error handling for declined cards
+   - Manual testing on staging environment
    ```
 
-   Check one checkbox to set the Release Label. If none is checked, the task won't have a Release Label set.
-
-5. **Add Dependent PRs section** (if task spans multiple repositories):
+3. **Add Dependent PRs section** (if task spans multiple repositories):
 
    ```markdown
    ## Dependent PRs
@@ -225,9 +312,31 @@ jobs:
    - https://github.com/owner/mobile/pull/300
    ```
 
+   ```markdown
+   ## Dependent PRs
+
+   <!-- List any PRs that must be merged before or alongside this PR -->
+
+   - https://github.com/owner/api/pull/200
+   - https://github.com/owner/mobile/pull/300
+   ```
+
    **Note:** Only full GitHub URLs are supported. Use the format: `https://github.com/owner/repo/pull/123`. Other formats (like `owner/repo#123` or `#123`) are not supported.
 
-6. **Merge PR to `dev` branch:**
+   **Secondary PRs:** If your PR depends on another PR (e.g., UI depends on API), you can list it in the Dependent PRs section. For secondary PRs:
+
+   - Impact, Release Notes, and Testing Notes become **optional**
+   - The validation workflow will show warnings instead of errors for missing optional fields
+   - All details should be explained in the master/primary PR
+
+4. **PR Validation:**
+
+   - When you open or update the PR, the validation workflow automatically runs
+   - Check the "PR Template Validation" status check on your PR
+   - If validation fails, the PR cannot be merged until all errors are fixed
+   - Fix any errors shown in the check output and push updates
+
+5. **Merge PR to `dev` branch:**
    - Your deployment workflow runs
    - After successful deployment, `release-dev.yaml` is called
    - Notion tasks are updated automatically
@@ -271,9 +380,55 @@ When a task spans multiple repositories (e.g., web and API):
 2. **Automatic release:**
    - Your deployment workflow runs
    - After successful deployment, `release-main.yaml` is called
-   - Version is calculated from Notion's latest release + task labels
-   - All "On Dev" tasks in "Next Release" are promoted to the new version
-   - Git tag `vX.Y.Z` is created
+   - Version is calculated from Notion's latest release + task labels (shared across all repos)
+   - Release is created or found in Notion with this version
+   - This repository is added to the release's "Repositories" list
+   - All "On Dev" tasks in "Next Release" are promoted to the new version (only by first repo)
+   - Git tag `vX.Y.Z` is created for this repository (only if not already tagged)
+   - Release status is updated: "Partially Released" if not all repos are released, "Released" when all repos are released
+
+### Multi-Repository Release Synchronization
+
+When you have multiple repositories (e.g., API and UI) that share the same Notion databases:
+
+**How it works:**
+
+- All repos use the same Tasks and Releases databases in Notion
+- Version is calculated once based on ALL tasks in "Next Release" (regardless of which repo they came from)
+- When a repo triggers the release workflow:
+  1. Calculates the version (same calculation for all repos)
+  2. Creates or finds the release in Notion for that version
+  3. Checks if this repo is already in the "Repositories" list
+  4. If not already included:
+     - Adds this repo to the "Repositories" list
+     - Promotes tasks to production (only first repo does this)
+     - Creates git tag for this repo
+     - Updates release status based on number of repos included
+  5. If already included: Skips task promotion and tag creation (idempotent)
+
+**Release Status:**
+
+- **"Partially Released"**: When not all required repos have been released yet
+- **"Released"**: When all required repos (specified in `required_repos`) have been released
+
+**Example scenarios:**
+
+**Scenario 1: Both repos trigger (typical case with required_repos: "api,ui")**
+
+- Repo A triggers → calculates version 1.2.0 → creates release → adds "api" to Repositories → status: "Partially Released" (missing "ui") → promotes tasks → tags Repo A
+- Repo B triggers → calculates version 1.2.0 → finds existing release → adds "ui" to Repositories → status: "Released" (all required repos included) → skips tasks (already done) → tags Repo B
+
+**Scenario 2: Simultaneous triggers**
+
+- Both repos trigger at the same time → both calculate same version → first one creates release → second one finds it → both add themselves → both tag
+
+**Important:**
+
+- Each repo must provide a unique `repo_identifier` when calling the workflow
+- Set `required_repos` to a comma-separated list of all repo identifiers that must be included for a release to be complete (e.g., `"api,ui"`)
+- If `required_repos` is not specified or empty, the release will be marked as "Released" after the first repo
+- Add a "Repositories" property to your Releases database as a **Multi-select** type (required)
+- For single-repo setups, the Repositories column will always contain just one value
 
 ### Version Calculation
 
@@ -291,13 +446,25 @@ The next version is determined by:
 
 ## ⚙️ Customization
 
-Both workflows support many input parameters for customization. See the workflow files for all available options, including:
+All workflows support many input parameters for customization. See the workflow files for all available options, including:
+
+### PR Template Validation Workflow
+
+- **`task_id_pattern`** - Regex pattern for task IDs in PR title (default: `STR-\d+`)
+  - Example: `"PROJ-\\d+"` for `PROJ-123` format
+  - Example: `"[A-Z]+-\\d+"` for any uppercase prefix
+
+### Release Workflows
 
 - Branch names (dev/main)
 - Task ID pattern (regex)
 - Property names in Notion
 - Release stage values
 - Release label values
+- **`repo_identifier`** - Required: Identifier for this repository (e.g., "api", "ui", "web")
+- **`required_repos`** - Optional: Comma-separated list of repo identifiers that must be included for a release to be complete (e.g., "api,ui" or "api,ui,web"). If not specified, release is marked as "Released" after first repo
+- **`repos_property`** - Optional: Notion property name for tracking repos (default: "Repositories")
+- **`status_partially_released`** - Optional: Status value for partially released versions (default: "Partially Released")
 - And more...
 
 ---
@@ -316,12 +483,22 @@ Both workflows support many input parameters for customization. See the workflow
 ### Releases Database
 
 - **Version** (Title) - Semantic version (e.g., "1.10.0")
-- **Status** (Select) - `Next` (pending) / `Released` (completed)
+- **Status** (Select) - `Next` (pending) / `Partially Released` (some repos released) / `Released` (all repos released)
 - **Release Date** (Date) - Optional release date
+- **Repositories** (Multi-select, required) - List of repositories included in this release (e.g., "api", "ui", "web"). For single-repo setups, this will always contain one value
 
 ---
 
 ## 🧪 Testing
+
+### Testing PR Template Validation
+
+1. Create a PR without a task ID in the title → Should fail validation
+2. Create a PR with task ID but missing Description section → Should fail validation
+3. Create a PR with all required sections → Should pass validation
+4. Create a secondary PR (with Dependent PRs) without Impact/Release Notes/Testing Notes → Should pass with warnings
+
+### Testing Release Workflows
 
 1. Create a test release in Notion with version `0.0.0` and status `Released`
 2. Create a PR with task IDs in the title and merge to `dev`

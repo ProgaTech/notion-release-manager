@@ -58,6 +58,25 @@ on:
         required: false
         type: string
         default: "On Dev"
+      repos_property:
+        description: "Notion property name for tracking repos in a release"
+        required: false
+        type: string
+        default: "Repositories"
+      repo_identifier:
+        description: "Identifier for this repository (e.g., 'api', 'ui', 'web')"
+        required: true
+        type: string
+      required_repos:
+        description: "Comma-separated list of repo identifiers that must be included for a release to be considered complete (e.g., 'api,ui' or 'api,ui,web')"
+        required: false
+        type: string
+        default: ""
+      status_partially_released:
+        description: "Release status value for partially released versions"
+        required: false
+        type: string
+        default: "Partially Released"
     secrets:
       NOTION_API_TOKEN:
         required: true
@@ -85,6 +104,10 @@ jobs:
       RELEASE_LABEL_MINOR: ${{ inputs.release_label_minor }}
       RELEASE_LABEL_PATCH: ${{ inputs.release_label_patch }}
       RELEASE_STAGE_DEV: ${{ inputs.release_stage_dev }}
+      REPOS_PROPERTY: ${{ inputs.repos_property }}
+      REPO_IDENTIFIER: ${{ inputs.repo_identifier }}
+      REQUIRED_REPOS: ${{ inputs.required_repos }}
+      STATUS_PARTIALLY_RELEASED: ${{ inputs.status_partially_released }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -151,28 +174,112 @@ jobs:
             }
 
             async function getLatestReleasedVersion() {
+              const statusReleased = process.env.RELEASE_STATUS_RELEASED;
+              const statusPartiallyReleased = process.env.STATUS_PARTIALLY_RELEASED;
+              
+              // Query for both "Released" and "Partially Released" statuses
+              const filter = {
+                or: [
+                  { property: "Status", select: { equals: statusReleased } }
+                ]
+              };
+              
+              if (statusPartiallyReleased) {
+                filter.or.push({ property: "Status", select: { equals: statusPartiallyReleased } });
+              }
+              
               const res = await queryNotionDB(releasesDB, {
-                filter: {
-                  property: "Status",
-                  select: { equals: process.env.RELEASE_STATUS_RELEASED }
-                },
+                filter,
                 sorts: [{ property: "Version", direction: "descending" }]
               });
+              
               if (!res.results.length) return "0.0.0";
-              return res.results[0].properties.Version.title[0].plain_text;
+              const version = res.results[0].properties.Version.title[0].plain_text;
+              const status = res.results[0].properties.Status.select.name;
+              return { version, status };
             }
 
-            async function ensureRelease(version, status) {
+            async function ensureReleaseWithRepoTracking(version, repoIdentifier, reposProperty, requiredReposList, statusPartiallyReleased, statusReleased) {
+              // Check if release already exists
               const found = await queryNotionDB(releasesDB, {
                 filter: { property: "Version", title: { equals: version } }
               });
-              if (found.results.length) return found.results[0].id;
-              const page = await createPage(releasesDB, {
-                Version: { title: [{ text: { content: version } }] },
-                Status: { select: { name: status } },
-                "Release Date": { date: { start: new Date().toISOString() } }
-              });
-              return page.id;
+
+              let releasePage;
+              let isNewRelease = false;
+
+              if (found.results.length) {
+                releasePage = found.results[0];
+              } else {
+                // Create new release
+                // Determine initial status: if no required repos or only current repo required, set to "Released", otherwise "Partially Released"
+                const initialStatus = (requiredReposList.length === 0 || (requiredReposList.length === 1 && requiredReposList.includes(repoIdentifier))) 
+                  ? statusReleased 
+                  : statusPartiallyReleased;
+                
+                const properties = {
+                  Version: { title: [{ text: { content: version } }] },
+                  Status: { select: { name: initialStatus } },
+                  "Release Date": { date: { start: new Date().toISOString() } },
+                  [reposProperty]: {
+                    multi_select: [{ name: repoIdentifier }]
+                  }
+                };
+
+                releasePage = await createPage(releasesDB, properties);
+                isNewRelease = true;
+                console.log(`Created new release ${version} with repo "${repoIdentifier}"`);
+              }
+
+              const releaseId = releasePage.id;
+              const reposProp = releasePage.properties[reposProperty];
+              
+              // Get current repos list from multi_select
+              const currentRepos = (reposProp?.multi_select || []).map(r => r.name);
+
+              // Check if this repo is already in the list
+              const repoAlreadyIncluded = currentRepos.includes(repoIdentifier);
+              
+              if (!repoAlreadyIncluded) {
+                // Add this repo to the list
+                currentRepos.push(repoIdentifier);
+                
+                // Check if all required repos are now included
+                // If no required repos specified, mark as "Released" after first repo
+                const allRequiredReposIncluded = requiredReposList.length === 0 || 
+                  requiredReposList.every(reqRepo => currentRepos.includes(reqRepo));
+                
+                const newStatus = allRequiredReposIncluded ? statusReleased : statusPartiallyReleased;
+                
+                const updateProps = {
+                  [reposProperty]: {
+                    multi_select: currentRepos.map(r => ({ name: r }))
+                  },
+                  Status: { select: { name: newStatus } }
+                };
+
+                await patchPage(releaseId, updateProps);
+                
+                if (allRequiredReposIncluded) {
+                  if (requiredReposList.length === 0) {
+                    console.log(`No required repos specified. Updated status to "Released"`);
+                  } else {
+                    console.log(`All required repos (${requiredReposList.join(', ')}) are included. Updated status to "Released"`);
+                  }
+                } else {
+                  const missingRepos = requiredReposList.filter(r => !currentRepos.includes(r));
+                  console.log(`Missing repos: ${missingRepos.join(', ')}. Status set to "Partially Released"`);
+                }
+                console.log(`Added repo "${repoIdentifier}" to release ${version}`);
+              } else {
+                console.log(`Repo "${repoIdentifier}" already in release ${version}`);
+              }
+
+              return {
+                releaseId,
+                repoAlreadyIncluded: repoAlreadyIncluded && !isNewRelease, // If this is a new release we just created, we need to process it even though repo is already included
+                currentRepos
+              };
             }
 
             async function getNextReleaseTasks() {
@@ -210,12 +317,39 @@ jobs:
             const nextReleaseName = process.env.NEXT_RELEASE_NAME;
             const statusNext = process.env.RELEASE_STATUS_NEXT;
             const statusReleased = process.env.RELEASE_STATUS_RELEASED;
+            const reposProperty = process.env.REPOS_PROPERTY;
+            const repoIdentifier = process.env.REPO_IDENTIFIER;
+            const requiredReposStr = process.env.REQUIRED_REPOS || "";
+            const requiredReposList = requiredReposStr 
+              ? requiredReposStr.split(',').map(r => r.trim()).filter(r => r)
+              : [];
+            const statusPartiallyReleased = process.env.STATUS_PARTIALLY_RELEASED;
+
+            console.log(`Processing release for repo: ${repoIdentifier}`);
+            if (requiredReposList.length > 0) {
+              console.log(`Required repos for complete release: ${requiredReposList.join(', ')}`);
+            }
+
+            // Ensure "Next Release" exists (for task queries)
+            async function ensureRelease(version, status) {
+              const found = await queryNotionDB(releasesDB, {
+                filter: { property: "Version", title: { equals: version } }
+              });
+              if (found.results.length) return found.results[0].id;
+              const page = await createPage(releasesDB, {
+                Version: { title: [{ text: { content: version } }] },
+                Status: { select: { name: status } },
+                "Release Date": { date: { start: new Date().toISOString() } }
+              });
+              return page.id;
+            }
+
             const nextReleaseId = await ensureRelease(nextReleaseName, statusNext);
             console.log(`Pending release page: "${nextReleaseName}" (${nextReleaseId})`);
 
             // Get latest released version from Notion (source of truth)
-            const latest = await getLatestReleasedVersion();
-            console.log(`Latest released version from Notion: ${latest}`);
+            const { version: latest, status: latestStatus } = await getLatestReleasedVersion();
+            console.log(`Latest released version from Notion: ${latest} (status: ${latestStatus})`);
 
             // Determine version bump based on Release Note labels from Notion tasks
             // Only consider tasks that are fully on dev (not partially)
@@ -254,45 +388,65 @@ jobs:
               console.log(`Error determining bump from Notion tasks: ${e.message}, defaulting to patch`);
             }
 
-            const nextVersion = bumpVersion(latest, calculatedBump);
+            // If the latest version is partially released, we don't need to bump the version to another one
+            const nextVersion = latestStatus === statusPartiallyReleased ? latest : bumpVersion(latest, calculatedBump);
             console.log(`Next version: ${nextVersion} (base: ${latest}, bump: ${calculatedBump})`);
-            const prodReleaseId = await ensureRelease(nextVersion, statusReleased);
 
-            // Promote tasks from "Next Release" to the new version
-            // Only promote tasks that are fully on dev (not partially)
-            try {
-              console.log(`Promoting ${nextReleaseTasks.length} tasks from "${nextReleaseName}" to ${nextVersion}`);
-              
-              for (const task of nextReleaseTasks) {
-                try {
-                  const props = {
-                    [RELEASE_REL_PROP]: { relation: [{ id: prodReleaseId }] },
-                    [RELEASE_STAGE_PROP]: { select: { name: PROD_STAGE } },
-                    "Release Date": { date: { start: new Date().toISOString() } }
-                  };
-                  await patchPage(task.id, props);
-                  await sleep(300);
-                } catch (e) {
-                  console.log(`Error promoting task ${task.id}: ${e.message}`);
+            // Ensure release exists and track this repo
+            const releaseInfo = await ensureReleaseWithRepoTracking(
+              nextVersion,
+              repoIdentifier,
+              reposProperty,
+              requiredReposList,
+              statusPartiallyReleased,
+              statusReleased
+            );
+            const prodReleaseId = releaseInfo.releaseId;
+
+            // Only promote tasks if this is the first time repo is processing for this release,
+            // to prevents duplicate task promotions when multiple repos trigger
+            if (!releaseInfo.repoAlreadyIncluded && nextReleaseTasks.length > 0) {
+              try {
+                console.log(`Promoting ${nextReleaseTasks.length} tasks from "${nextReleaseName}" to ${nextVersion}`);
+                
+                for (const task of nextReleaseTasks) {
+                  try {
+                    const props = {
+                      [RELEASE_REL_PROP]: { relation: [{ id: prodReleaseId }] },
+                      [RELEASE_STAGE_PROP]: { select: { name: PROD_STAGE } },
+                      "Release Date": { date: { start: new Date().toISOString() } }
+                    };
+                    await patchPage(task.id, props);
+                    await sleep(300);
+                  } catch (e) {
+                    console.log(`Error promoting task ${task.id}: ${e.message}`);
+                  }
                 }
+              } catch (e) {
+                console.log(`Error querying tasks for promotion: ${e.message}`);
               }
-            } catch (e) {
-              console.log(`Error querying tasks for promotion: ${e.message}`);
+            } else if (releaseInfo.repoAlreadyIncluded) {
+              console.log(`Tasks already promoted by another repo. Skipping task promotion.`);
             }
 
-            // Create git tag
-            try {
-              execSync(`git config user.name "GitHub Actions"`);
-              execSync(`git config user.email "actions@github.com"`);
-              const tagName = `v${nextVersion}`;
-              const exists = tryExec(`git rev-parse ${tagName}`);
-              if (!exists) {
-                execSync(`git tag -a ${tagName} -m "Release ${tagName}"`);
-                execSync(`git push origin ${tagName}`);
-                console.log(`Created git tag ${tagName}`);
-              } else {
-                console.log(`Tag ${tagName} already exists, skipping creation`);
+            // Only create git tag if repo is not already in the release,
+            // to ensure each repo only tags once per version
+            if (!releaseInfo.repoAlreadyIncluded) {
+              try {
+                execSync(`git config user.name "GitHub Actions"`);
+                execSync(`git config user.email "actions@github.com"`);
+                const tagName = `v${nextVersion}`;
+                const exists = tryExec(`git rev-parse ${tagName}`);
+                if (!exists) {
+                  execSync(`git tag -a ${tagName} -m "Release ${tagName} (repo: ${repoIdentifier})"`);
+                  execSync(`git push origin ${tagName}`);
+                  console.log(`Created git tag ${tagName} for repo ${repoIdentifier}`);
+                } else {
+                  console.log(`Tag ${tagName} already exists in this repo, skipping creation`);
+                }
+              } catch (e) {
+                console.log(`Error creating git tag: ${e.message}`);
               }
-            } catch (e) {
-              console.log(`Error creating git tag: ${e.message}`);
+            } else {
+              console.log(`Repo ${repoIdentifier} already tagged for version ${nextVersion}. Skipping tag creation.`);
             }
