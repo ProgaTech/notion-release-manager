@@ -84,13 +84,32 @@ jobs:
         uses: actions/github-script@v6
         env:
           RELEASE_VERSION: ${{ inputs.release_version }}
+          NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
+          NOTION_TASKS_DATABASE_ID: ${{ secrets.NOTION_TASKS_DATABASE_ID }}
+          NOTION_RELEASES_DATABASE_ID: ${{ secrets.NOTION_RELEASES_DATABASE_ID }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const notionApi = "https://api.notion.com/v1";
-            const notionToken = "${{ secrets.NOTION_API_TOKEN }}";
-            const tasksDB = "${{ secrets.NOTION_TASKS_DATABASE_ID }}";
-            const releasesDB = "${{ secrets.NOTION_RELEASES_DATABASE_ID }}";
+            const notionToken = process.env.NOTION_API_TOKEN;
+            const tasksDB = process.env.NOTION_TASKS_DATABASE_ID;
+            const releasesDB = process.env.NOTION_RELEASES_DATABASE_ID;
+            const slackWebhook = process.env.SLACK_WEBHOOK_URL;
+
+            // Validate required environment variables
+            if (!notionToken) {
+              throw new Error("NOTION_API_TOKEN secret is required but not provided");
+            }
+            if (!tasksDB) {
+              throw new Error("NOTION_TASKS_DATABASE_ID secret is required but not provided");
+            }
+            if (!releasesDB) {
+              throw new Error("NOTION_RELEASES_DATABASE_ID secret is required but not provided");
+            }
+            if (!slackWebhook) {
+              throw new Error("SLACK_WEBHOOK_URL secret is required but not provided");
+            }
 
             const headers = {
               "Authorization": `Bearer ${notionToken}`,
@@ -401,6 +420,6 @@ jobs:
       - name: Send Slack notification
         uses: slackapi/slack-github-action@v2.1.0
         with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook: ${{ env.SLACK_WEBHOOK_URL }}
           webhook-type: incoming-webhook
           payload: ${{ steps.format_message.outputs.slack_payload }}
