@@ -414,7 +414,6 @@ jobs:
                     const props = {
                       [RELEASE_REL_PROP]: { relation: [{ id: prodReleaseId }] },
                       [RELEASE_STAGE_PROP]: { status: { name: PROD_STAGE } },
-                      "Release Date": { date: { start: new Date().toISOString() } }
                     };
                     await patchPage(task.id, props);
                     await sleep(300);
