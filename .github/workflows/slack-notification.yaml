@@ -104,7 +104,12 @@ jobs:
                 headers,
                 body: JSON.stringify(body)
               });
-              if (!res.ok) throw new Error(`Query failed: ${res.status} ${await res.text()}`);
+              if (!res.ok)
+              {
+                console.error(`Query with body ${JSON.stringify(body)} failed: ${res.status} ${await res.text()}`);
+                throw new Error(`Query failed: ${res.status} ${await res.text()}`);
+              }
+
               return res.json();
             }
 
