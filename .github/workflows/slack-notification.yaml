@@ -80,11 +80,16 @@ jobs:
       RELEASE_STATUS_RELEASED: ${{ inputs.release_status_released }}
     steps:
       - name: Debug environment variables and secrets length (for debugging purposes)
+        env:
+          NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
+          NOTION_TASKS_DATABASE_ID: ${{ secrets.NOTION_TASKS_DATABASE_ID }}
+          NOTION_RELEASES_DATABASE_ID: ${{ secrets.NOTION_RELEASES_DATABASE_ID }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
-          echo "NOTION_API_TOKEN length: ${{ secrets.NOTION_API_TOKEN.length }}"
-          echo "NOTION_TASKS_DATABASE_ID length: ${{ secrets.NOTION_TASKS_DATABASE_ID.length }}"
-          echo "NOTION_RELEASES_DATABASE_ID length: ${{ secrets.NOTION_RELEASES_DATABASE_ID.length }}"
-          echo "SLACK_WEBHOOK_URL length: ${{ secrets.SLACK_WEBHOOK_URL.length }}"
+          echo "NOTION_API_TOKEN length: ${#NOTION_API_TOKEN}"
+          echo "NOTION_TASKS_DATABASE_ID length: ${#NOTION_TASKS_DATABASE_ID}"
+          echo "NOTION_RELEASES_DATABASE_ID length: ${#NOTION_RELEASES_DATABASE_ID}"
+          echo "SLACK_WEBHOOK_URL length: ${#SLACK_WEBHOOK_URL}"
 
       - name: Fetch release data and format Slack message
         id: format_message
