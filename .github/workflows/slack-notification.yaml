@@ -78,14 +78,8 @@ jobs:
       RELEASE_LABEL_PROPERTY: ${{ inputs.release_label_property }}
       REPOS_PROPERTY: ${{ inputs.repos_property }}
       RELEASE_STATUS_RELEASED: ${{ inputs.release_status_released }}
-    steps:
-      - name: Debug environment variables and secrets length (for debugging purposes)
-        run: |
-          echo "NOTION_API_TOKEN length: ${{ secrets.NOTION_API_TOKEN.length }}"
-          echo "NOTION_TASKS_DATABASE_ID length: ${{ secrets.NOTION_TASKS_DATABASE_ID.length }}"
-          echo "NOTION_RELEASES_DATABASE_ID length: ${{ secrets.NOTION_RELEASES_DATABASE_ID.length }}"
-          echo "SLACK_WEBHOOK_URL length: ${{ secrets.SLACK_WEBHOOK_URL.length }}"
 
+    steps:
       - name: Fetch release data and format Slack message
         id: format_message
         uses: actions/github-script@v6
