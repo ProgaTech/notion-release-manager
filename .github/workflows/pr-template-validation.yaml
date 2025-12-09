@@ -52,6 +52,15 @@ jobs:
               return;
             }
 
+            console.log(`Validating PR #${prNumber}`);
+
+            // Fetch PR details early so it's available for all checks
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+
             const whitelistFilePaths = (process.env.WHITELIST_FILE_PATHS || '').split(',').map(filePath => filePath.trim()).filter(filePath => filePath.length > 0);
             if (whitelistFilePaths.length > 0) {
               const prFiles = await github.rest.pulls.listFiles({
@@ -76,15 +85,6 @@ jobs:
                 return;
               }
             }
-
-            console.log(`Validating PR #${prNumber}`);
-
-            // Fetch PR details
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber,
-            });
 
             // Check PR title for task IDs
             const taskIdPattern = new RegExp(process.env.TASK_ID_PATTERN, 'gi');
