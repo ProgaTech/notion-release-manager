@@ -14,6 +14,11 @@ on:
         required: false
         type: string
         default: "STR-\\d+"
+      whitelist_file_paths:
+        description: "Comma-separated list of file paths that are not required to have a task ID in the PR title"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   pull-requests: write
@@ -60,20 +65,34 @@ jobs:
             const taskIds = pr.title.match(taskIdPattern) || [];
 
             if (taskIds.length === 0) {
-              core.setFailed(`PR title must contain at least one task ID matching pattern: ${process.env.TASK_ID_PATTERN}`);
-              await github.rest.checks.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                name: 'PR Template Validation',
-                head_sha: pr.head.sha,
-                status: 'completed',
-                conclusion: 'failure',
-                output: {
-                  title: 'PR title missing task ID',
-                  summary: `PR title must contain at least one task ID matching the pattern: \`${process.env.TASK_ID_PATTERN}\`\n\nExample: \`feat: add feature STR-123\``,
-                },
-              });
-              return;
+              let shouldFail = false;
+              const whitelistFiles = inputs.whitelist_file_paths.split(',').map(file => file.trim());
+              if (whitelistFiles.length > 0) {
+                const files = await github.rest.pulls.listFiles({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: prNumber,
+                });
+                // If any file changed is not in the whitelist, fail the validation
+                shouldFail = files.data.some(file => !whitelistFiles.includes(file.filename));
+              }
+
+              if (shouldFail) {
+                core.setFailed(`PR title must contain at least one task ID matching pattern: ${process.env.TASK_ID_PATTERN}`);
+                await github.rest.checks.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: 'PR Template Validation',
+                  head_sha: pr.head.sha,
+                  status: 'completed',
+                  conclusion: 'failure',
+                  output: {
+                    title: 'PR title missing task ID',
+                    summary: `PR title must contain at least one task ID matching the pattern: \`${process.env.TASK_ID_PATTERN}\`\n\nExample: \`feat: add feature STR-123\``,
+                  },
+                });
+                return;
+              }
             }
 
             console.log(`Found task IDs in PR title: ${taskIds.join(', ')}`);
