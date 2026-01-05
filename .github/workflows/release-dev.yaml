@@ -329,7 +329,7 @@ jobs:
               if (found.results.length) return found.results[0].id;
               const page = await createPage(releasesDB, {
                 Version: { title: [{ text: { content: version } }] },
-                Status: { select: { name: status } },
+                Status: { status: { name: status } },
                 "Release Date": { date: { start: new Date().toISOString() } }
               });
               return page.id;

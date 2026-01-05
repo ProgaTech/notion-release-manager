@@ -180,12 +180,12 @@ jobs:
               // Query for both "Released" and "Partially Released" statuses
               const filter = {
                 or: [
-                  { property: "Status", select: { equals: statusReleased } }
+                  { property: "Status", status: { equals: statusReleased } }
                 ]
               };
               
               if (statusPartiallyReleased) {
-                filter.or.push({ property: "Status", select: { equals: statusPartiallyReleased } });
+                filter.or.push({ property: "Status", status: { equals: statusPartiallyReleased } });
               }
               
               const res = await queryNotionDB(releasesDB, {
@@ -195,7 +195,7 @@ jobs:
               
               if (!res.results.length) return "0.0.0";
               const version = res.results[0].properties.Version.title[0].plain_text;
-              const status = res.results[0].properties.Status.select.name;
+              const status = res.results[0].properties.Status.status.name;
               return { version, status };
             }
 
@@ -219,7 +219,7 @@ jobs:
                 
                 const properties = {
                   Version: { title: [{ text: { content: version } }] },
-                  Status: { select: { name: initialStatus } },
+                  Status: { status: { name: initialStatus } },
                   "Release Date": { date: { start: new Date().toISOString() } },
                   [reposProperty]: {
                     multi_select: [{ name: repoIdentifier }]
@@ -255,7 +255,7 @@ jobs:
                   [reposProperty]: {
                     multi_select: currentRepos.map(r => ({ name: r }))
                   },
-                  Status: { select: { name: newStatus } }
+                  Status: { status: { name: newStatus } }
                 };
 
                 await patchPage(releaseId, updateProps);
@@ -338,7 +338,7 @@ jobs:
               if (found.results.length) return found.results[0].id;
               const page = await createPage(releasesDB, {
                 Version: { title: [{ text: { content: version } }] },
-                Status: { select: { name: status } },
+                Status: { status: { name: status } },
                 "Release Date": { date: { start: new Date().toISOString() } }
               });
               return page.id;
