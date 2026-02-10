@@ -1,0 +1,56 @@
+name: 'Slack Notifier'
+description: 'Send release notification to Slack'
+
+inputs:
+  release_name:
+    description: 'Name/version of the release to notify about'
+    required: true
+  release_type:
+    description: 'Type of release: dev, stage, or prod'
+    required: true
+  notion_token:
+    description: 'Notion API token'
+    required: true
+  releases_database_id:
+    description: 'Notion Releases database ID'
+    required: true
+  tasks_database_id:
+    description: 'Notion Tasks database ID'
+    required: true
+  slack_webhook_url:
+    description: 'Slack webhook URL'
+    required: true
+  task_id_property:
+    description: 'Notion property name for task ID'
+    default: 'ID'
+  task_id_prefix:
+    description: 'Prefix for task IDs (e.g., STR-)'
+    default: 'STR-'
+
+outputs:
+  success:
+    description: 'Whether notification was sent successfully'
+    value: ${{ steps.notify.outputs.success }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Send Notification
+      id: notify
+      shell: bash
+      env:
+        RELEASE_NAME: ${{ inputs.release_name }}
+        RELEASE_TYPE: ${{ inputs.release_type }}
+        NOTION_TOKEN: ${{ inputs.notion_token }}
+        RELEASES_DATABASE_ID: ${{ inputs.releases_database_id }}
+        TASKS_DATABASE_ID: ${{ inputs.tasks_database_id }}
+        SLACK_WEBHOOK_URL: ${{ inputs.slack_webhook_url }}
+        TASK_ID_PROPERTY: ${{ inputs.task_id_property }}
+        TASK_ID_PREFIX: ${{ inputs.task_id_prefix }}
+      run: |
+        node "${{ github.action_path }}/index.js"

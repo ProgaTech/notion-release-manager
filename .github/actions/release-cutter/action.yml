@@ -1,0 +1,95 @@
+name: 'Release Cutter'
+description: 'Cut a release for any stage (dev/stage/prod) using git as source of truth'
+
+inputs:
+  release_type:
+    description: 'Type of release: dev, stage, or prod'
+    required: true
+  repo_identifier:
+    description: 'Unique identifier for this repo (e.g., api, ui)'
+    required: true
+  single_repo_release:
+    description: 'Whether this is a single-repo release (hotfix)'
+    default: 'false'
+  required_repos:
+    description: 'Comma-separated list of repos required for complete release'
+    default: ''
+  force_override_partial:
+    description: 'Force single-repo release even if partial exists'
+    default: 'false'
+  dev_branch:
+    description: 'Name of dev branch'
+    default: 'dev'
+  stage_branch:
+    description: 'Name of stage branch'
+    default: 'stage'
+  prod_branch:
+    description: 'Name of prod/main branch'
+    default: 'main'
+  task_id_pattern:
+    description: 'Regex pattern for task IDs'
+    default: 'STR-\d+'
+  notion_token:
+    description: 'Notion API token'
+    required: true
+  releases_database_id:
+    description: 'Notion Releases database ID'
+    required: true
+  tasks_database_id:
+    description: 'Notion Tasks database ID'
+    required: true
+  task_id_property:
+    description: 'Notion property name for task ID'
+    default: 'ID'
+  task_id_prefix:
+    description: 'Prefix for task IDs (e.g., STR-)'
+    default: 'STR-'
+
+outputs:
+  release_name:
+    description: 'Name of the created/joined release'
+    value: ${{ steps.cut.outputs.release_name }}
+  release_id:
+    description: 'Notion page ID of the release'
+    value: ${{ steps.cut.outputs.release_id }}
+  release_status:
+    description: 'Status of the release (Released or Partially Released)'
+    value: ${{ steps.cut.outputs.release_status }}
+  task_count:
+    description: 'Number of tasks in this release'
+    value: ${{ steps.cut.outputs.task_count }}
+  is_new_release:
+    description: 'Whether a new release was created (vs joining existing)'
+    value: ${{ steps.cut.outputs.is_new_release }}
+  tag_name:
+    description: 'Git tag name (prod releases only)'
+    value: ${{ steps.cut.outputs.tag_name }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Cut Release
+      id: cut
+      shell: bash
+      env:
+        RELEASE_TYPE: ${{ inputs.release_type }}
+        REPO_IDENTIFIER: ${{ inputs.repo_identifier }}
+        SINGLE_REPO_RELEASE: ${{ inputs.single_repo_release }}
+        REQUIRED_REPOS: ${{ inputs.required_repos }}
+        FORCE_OVERRIDE_PARTIAL: ${{ inputs.force_override_partial }}
+        DEV_BRANCH: ${{ inputs.dev_branch }}
+        STAGE_BRANCH: ${{ inputs.stage_branch }}
+        PROD_BRANCH: ${{ inputs.prod_branch }}
+        TASK_ID_PATTERN: ${{ inputs.task_id_pattern }}
+        NOTION_TOKEN: ${{ inputs.notion_token }}
+        RELEASES_DATABASE_ID: ${{ inputs.releases_database_id }}
+        TASKS_DATABASE_ID: ${{ inputs.tasks_database_id }}
+        TASK_ID_PROPERTY: ${{ inputs.task_id_property }}
+        TASK_ID_PREFIX: ${{ inputs.task_id_prefix }}
+      run: |
+        node "${{ github.action_path }}/index.js"

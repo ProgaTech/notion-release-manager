@@ -1,0 +1,122 @@
+name: Cut Release
+
+on:
+  workflow_call:
+    inputs:
+      release_type:
+        type: string
+        required: true
+        description: 'Type of release: dev, stage, or prod'
+      repo_identifier:
+        type: string
+        required: true
+        description: 'Unique identifier for this repo (e.g., api, ui)'
+      single_repo_release:
+        type: boolean
+        default: false
+        description: 'Whether this is a single-repo release (hotfix)'
+      required_repos:
+        type: string
+        default: ''
+        description: 'Comma-separated list of repos required for complete release'
+      force_override_partial:
+        type: boolean
+        default: false
+        description: 'Force single-repo release even if partial exists'
+      dev_branch:
+        type: string
+        default: 'dev'
+        description: 'Name of dev branch'
+      stage_branch:
+        type: string
+        default: 'stage'
+        description: 'Name of stage branch'
+      prod_branch:
+        type: string
+        default: 'main'
+        description: 'Name of prod/main branch'
+      task_id_pattern:
+        type: string
+        default: 'STR-\d+'
+        description: 'Regex pattern for task IDs'
+      task_id_property:
+        type: string
+        default: 'ID'
+        description: 'Notion property name for task ID'
+      task_id_prefix:
+        type: string
+        default: 'STR-'
+        description: 'Prefix for task IDs'
+    secrets:
+      NOTION_API_TOKEN:
+        required: true
+        description: 'Notion API token'
+      NOTION_RELEASES_DATABASE_ID:
+        required: true
+        description: 'Notion Releases database ID'
+      NOTION_TASKS_DATABASE_ID:
+        required: true
+        description: 'Notion Tasks database ID'
+    outputs:
+      release_name:
+        description: 'Name of the created/joined release'
+        value: ${{ jobs.cut.outputs.release_name }}
+      release_id:
+        description: 'Notion page ID of the release'
+        value: ${{ jobs.cut.outputs.release_id }}
+      release_status:
+        description: 'Status of the release'
+        value: ${{ jobs.cut.outputs.release_status }}
+      task_count:
+        description: 'Number of tasks in this release'
+        value: ${{ jobs.cut.outputs.task_count }}
+      is_new_release:
+        description: 'Whether a new release was created'
+        value: ${{ jobs.cut.outputs.is_new_release }}
+      tag_name:
+        description: 'Git tag name (prod releases only)'
+        value: ${{ jobs.cut.outputs.tag_name }}
+
+jobs:
+  cut:
+    runs-on: ubuntu-latest
+    outputs:
+      release_name: ${{ steps.cut-release.outputs.release_name }}
+      release_id: ${{ steps.cut-release.outputs.release_id }}
+      release_status: ${{ steps.cut-release.outputs.release_status }}
+      task_count: ${{ steps.cut-release.outputs.task_count }}
+      is_new_release: ${{ steps.cut-release.outputs.is_new_release }}
+      tag_name: ${{ steps.cut-release.outputs.tag_name }}
+    steps:
+      - name: Checkout consumer repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          path: consumer
+
+      - name: Checkout release manager
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/notion-release-manager
+          path: release-manager
+
+      - name: Cut Release
+        id: cut-release
+        uses: ./release-manager/.github/actions/release-cutter
+        with:
+          release_type: ${{ inputs.release_type }}
+          repo_identifier: ${{ inputs.repo_identifier }}
+          single_repo_release: ${{ inputs.single_repo_release }}
+          required_repos: ${{ inputs.required_repos }}
+          force_override_partial: ${{ inputs.force_override_partial }}
+          dev_branch: ${{ inputs.dev_branch }}
+          stage_branch: ${{ inputs.stage_branch }}
+          prod_branch: ${{ inputs.prod_branch }}
+          task_id_pattern: ${{ inputs.task_id_pattern }}
+          task_id_property: ${{ inputs.task_id_property }}
+          task_id_prefix: ${{ inputs.task_id_prefix }}
+          notion_token: ${{ secrets.NOTION_API_TOKEN }}
+          releases_database_id: ${{ secrets.NOTION_RELEASES_DATABASE_ID }}
+          tasks_database_id: ${{ secrets.NOTION_TASKS_DATABASE_ID }}
+        env:
+          GIT_DIR: ${{ github.workspace }}/consumer/.git

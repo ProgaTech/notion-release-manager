@@ -1,0 +1,60 @@
+name: 'PR Metadata Extractor'
+description: 'Extract metadata from PR and store in Notion (no stage tracking)'
+
+inputs:
+  pr_number:
+    description: 'PR number to extract metadata from'
+    required: true
+  repo_identifier:
+    description: 'Unique identifier for this repo (e.g., api, ui)'
+    required: true
+  task_id_pattern:
+    description: 'Regex pattern for task IDs'
+    default: 'STR-\d+'
+  notion_token:
+    description: 'Notion API token'
+    required: true
+  tasks_database_id:
+    description: 'Notion Tasks database ID'
+    required: true
+  task_id_property:
+    description: 'Notion property name for task ID'
+    default: 'ID'
+  task_id_prefix:
+    description: 'Prefix for task IDs (e.g., STR-)'
+    default: 'STR-'
+  github_token:
+    description: 'GitHub token for API access'
+    default: ${{ github.token }}
+
+outputs:
+  task_ids:
+    description: 'Comma-separated list of extracted task IDs'
+    value: ${{ steps.extract.outputs.task_ids }}
+  has_tasks:
+    description: 'Whether any tasks were found'
+    value: ${{ steps.extract.outputs.has_tasks }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Extract and Store Metadata
+      id: extract
+      shell: bash
+      env:
+        PR_NUMBER: ${{ inputs.pr_number }}
+        REPO_IDENTIFIER: ${{ inputs.repo_identifier }}
+        TASK_ID_PATTERN: ${{ inputs.task_id_pattern }}
+        NOTION_TOKEN: ${{ inputs.notion_token }}
+        TASKS_DATABASE_ID: ${{ inputs.tasks_database_id }}
+        TASK_ID_PROPERTY: ${{ inputs.task_id_property }}
+        TASK_ID_PREFIX: ${{ inputs.task_id_prefix }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+      run: |
+        node "${{ github.action_path }}/index.js"

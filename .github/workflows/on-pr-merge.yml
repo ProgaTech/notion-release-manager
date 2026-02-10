@@ -1,0 +1,65 @@
+name: Store PR Metadata
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        type: string
+        required: true
+        description: 'PR number to process'
+      repo_identifier:
+        type: string
+        required: true
+        description: 'Unique identifier for this repo (e.g., api, ui)'
+      task_id_pattern:
+        type: string
+        default: 'STR-\d+'
+        description: 'Regex pattern for task IDs in PR title'
+      task_id_property:
+        type: string
+        default: 'ID'
+        description: 'Notion property name for task ID'
+      task_id_prefix:
+        type: string
+        default: 'STR-'
+        description: 'Prefix for task IDs'
+    secrets:
+      NOTION_API_TOKEN:
+        required: true
+        description: 'Notion API token'
+      NOTION_TASKS_DATABASE_ID:
+        required: true
+        description: 'Notion Tasks database ID'
+    outputs:
+      task_ids:
+        description: 'Comma-separated list of extracted task IDs'
+        value: ${{ jobs.store-metadata.outputs.task_ids }}
+      has_tasks:
+        description: 'Whether any tasks were found'
+        value: ${{ jobs.store-metadata.outputs.has_tasks }}
+
+jobs:
+  store-metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      task_ids: ${{ steps.extract.outputs.task_ids }}
+      has_tasks: ${{ steps.extract.outputs.has_tasks }}
+    steps:
+      - name: Checkout release manager
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/notion-release-manager
+          path: release-manager
+
+      - name: Extract and Store PR Metadata
+        id: extract
+        uses: ./release-manager/.github/actions/pr-metadata-extractor
+        with:
+          pr_number: ${{ inputs.pr_number }}
+          repo_identifier: ${{ inputs.repo_identifier }}
+          task_id_pattern: ${{ inputs.task_id_pattern }}
+          task_id_property: ${{ inputs.task_id_property }}
+          task_id_prefix: ${{ inputs.task_id_prefix }}
+          notion_token: ${{ secrets.NOTION_API_TOKEN }}
+          tasks_database_id: ${{ secrets.NOTION_TASKS_DATABASE_ID }}
+          github_token: ${{ github.token }}
