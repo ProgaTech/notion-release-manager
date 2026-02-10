@@ -1,519 +1,434 @@
-# 🧩 Notion Release Manager
+# Notion Release Manager
 
-Reusable GitHub Actions workflows that automatically sync your PRs with Notion databases, tracking tasks through development and production releases.
-
----
-
-## 📋 What It Does
-
-This package provides three reusable workflows that you integrate into your repository:
-
-1. **`release-dev.yaml`** - Updates Notion when PRs are merged to your development branch
-2. **`release-main.yaml`** - Promotes tasks to production and creates versioned releases
-3. **`pr-template-validation.yaml`** - Validates PR descriptions match the template and blocks merges if requirements aren't met
-
-### Development Workflow (`release-dev.yaml`)
-
-When a PR is merged to your dev branch, this workflow:
-
-- Extracts task IDs (e.g., `STR-123`) from the PR title
-- Parses dependent PRs from the PR description (supports multi-repo tasks)
-- Checks if ALL dependent PRs are merged across all repositories
-- Links tasks to "Next Release" in Notion
-- Sets Release Stage:
-  - **"On Dev"** - All PRs are merged ✅
-  - **"Partially On Dev"** - Some PRs are still pending ⏳
-- Extracts Release Label from PR description (Major/Minor/Patch)
-- Extracts Release Notes and Testing Notes from PR description
-- Automatically promotes tasks to "On Dev" when the final PR is merged
-
-### Production Workflow (`release-main.yaml`)
-
-When code is pushed to your main branch, this workflow:
-
-- Gets the latest released version from Notion (source of truth)
-- Calculates the next version based on Release Labels in "Next Release" tasks (shared across all repos)
-- Creates or finds the release in Notion and tracks which repositories are part of it
-- Promotes all "On Dev" tasks from "Next Release" to the new version (only once, by first repo)
-- Sets Release Stage to "On Prod"
-- Creates a Git tag `vX.Y.Z` for this repository (only if not already tagged)
-- Updates release status: "Partially Released" when some repos are released, "Released" when all repos are released
-
-### PR Template Validation Workflow (`pr-template-validation.yaml`)
-
-When a PR is opened, edited, or marked ready for review, this workflow:
-
-- Validates that the PR title contains at least one task ID (e.g., `STR-123`)
-- Checks that the PR description includes all required sections:
-  - **Description** - Always required
-  - **Impact** - Required for primary PRs, optional for secondary PRs
-  - **Release Notes** - Required for primary PRs, optional for secondary PRs
-  - **Testing Notes** - Required for primary PRs, optional for secondary PRs
-- Verifies that at least one Impact checkbox is selected (Major/Minor/Patch) for primary PRs
-- Detects secondary PRs (PRs with dependent PRs listed) and makes Impact, Release Notes, and Testing Notes optional
-- Creates a GitHub check status that **blocks merging** if validation fails
-- Provides clear error messages indicating what needs to be fixed
-
-**Secondary PR Detection:** If a PR has entries in the "Dependent PRs" section, it's considered a secondary PR. For secondary PRs, Impact, Release Notes, and Testing Notes are optional since those details should be in the master/primary PR.
+Reusable GitHub Actions workflows that automatically sync PRs with Notion databases and manage releases across multiple repositories.
 
 ---
 
-## 🚀 How to Integrate in Your Repo
+## Overview
 
-These workflows are reusable workflows stored in a central repository within your organization. You can call them from any repository in the same organization without copying the files.
+This package provides modular, reusable workflows for release management:
 
-### Step 1: Set Up Notion
+| Workflow | Purpose |
+|----------|---------|
+| `on-pr-merge.yml` | Extract PR metadata and store in Notion |
+| `cut-release.yml` | Cut releases for any stage (dev/stage/prod) |
+| `notify-release.yml` | Send release notifications to Slack |
 
-The workflows use the existing **"GitHub Proga"** Notion integration. Make sure this integration has access to your Notion databases.
+### Architecture: Git as Source of Truth
 
-#### Create Notion Databases
+The system uses **git branches as the source of truth** for determining what's in each release:
 
-**Tasks Database** - Create a database with these properties:
+- **PR merge** → Stores metadata only (notes, labels) - no stage tracking
+- **Release cut** → Queries git to find included tasks, creates release record
+- **Stage status** → Derived from release links, not stored on tasks
 
-| Property      | Type                   | Required | Example                                             |
-| ------------- | ---------------------- | -------- | --------------------------------------------------- |
-| ID            | Number (unique)        | Yes      | 101                                                 |
-| Release Stage | Select                 | Yes      | On Dev / Partially On Dev / On Prod / Not Scheduled |
-| Release       | Relation → Releases DB | Yes      | 1.10.0                                              |
-| Release Notes | Text                   | No       | Description from PR                                 |
-| Testing Notes | Text                   | No       | Testing instructions from PR                        |
-| Release Label | Select                 | No       | Major / Minor / Patch                               |
+This approach eliminates race conditions and state synchronization issues.
 
-**Releases Database** - Create a database with these properties:
+### Key Features
 
-| Property     | Type         | Required | Example                                               |
-| ------------ | ------------ | -------- | ----------------------------------------------------- |
-| Version      | Title        | Yes      | 1.10.0                                                |
-| Status       | Select       | Yes      | Next / Partially Released / Released                  |
-| Release Date | Date         | No       | 2025-11-10                                            |
-| Repositories | Multi-select | Yes      | api, ui (tracks which repos are part of this release) |
+- **Multi-repo coordination** - Shared versions across repos with partial release tracking
+- **Flexible branching** - Supports any branch flow (dev→stage→prod, direct to prod, hotfixes)
+- **Aggregated notes** - Release notes from multiple PRs are combined with attribution
+- **Automatic version calculation** - Semver bumping based on task labels
+- **Safety checks** - Prevents conflicts between normal and hotfix releases
 
-**Important:** Share both databases with the "GitHub Proga" Notion integration.
+---
 
-### Step 2: Configure GitHub Secrets
+## Quick Start
 
-In your repository: **Settings → Secrets and variables → Actions → New repository secret**
+### 1. Set Up Notion Databases
 
-Add these secrets:
+**Tasks Database:**
 
-| Secret                        | Description                                      |
-| ----------------------------- | ------------------------------------------------ |
-| `NOTION_API_TOKEN`            | Your Notion integration token                    |
-| `NOTION_TASKS_DATABASE_ID`    | The ID of your Tasks database (found in its URL) |
-| `NOTION_RELEASES_DATABASE_ID` | The ID of your Releases database                 |
+| Property | Type | Purpose |
+|----------|------|---------|
+| Task ID | Title | Task identifier (e.g., "STR-101") |
+| ID | Number | Numeric ID for queries |
+| Release Notes | Rich Text | Aggregated from PRs |
+| Testing Notes | Rich Text | Aggregated from PRs |
+| Release Label | Select | Major / Minor / Patch |
+| Releases | Relation | Links to Releases DB |
 
-**Finding Database IDs:** The database ID is the 32-character string in the Notion database URL:
+**Releases Database:**
 
-```
-https://www.notion.so/workspace/32-char-database-id?v=...
-```
+| Property | Type | Purpose |
+|----------|------|---------|
+| Name | Title | Version or date-based name |
+| Type | Select | dev / stage / prod |
+| Status | Select | Released / Partially Released |
+| Repos | Multi-select | Repos included in release |
+| Date | Date | Release date |
+| Tasks | Relation | Linked tasks |
 
-### Step 3: Set Up PR Template Validation (Recommended)
+### 2. Configure GitHub Secrets
 
-Add PR template validation to automatically check PRs when they're opened or updated. This ensures all PRs follow the required template format.
+Add these secrets to your repository:
 
-**Option A: Automatic validation on PR events** (Recommended)
+| Secret | Description |
+|--------|-------------|
+| `NOTION_API_TOKEN` | Notion integration token |
+| `NOTION_TASKS_DATABASE_ID` | Tasks database ID |
+| `NOTION_RELEASES_DATABASE_ID` | Releases database ID |
+| `SLACK_WEBHOOK_URL` | Slack webhook URL (optional) |
 
-The workflow runs automatically when triggered by PR events. Simply create a workflow file that references it:
+### 3. Create Release Workflow
 
-**`.github/workflows/validate-pr.yaml`**:
-
-```yaml
-name: Validate PR Template
-
-on:
-  pull_request:
-    types: [opened, edited, synchronize, ready_for_review]
-
-permissions:
-  pull-requests: write
-  checks: write
-  contents: read
-
-jobs:
-  validate:
-    uses: org-name/repo-name/.github/workflows/pr-template-validation.yaml@main
-    with:
-      task_id_pattern: "STR-\\d+" # Optional: customize task ID pattern
-```
-
-**Option B: Call as reusable workflow from another workflow**
-
-You can also call the validation workflow from other workflows:
+Create `.github/workflows/release-automation.yml` in your repository:
 
 ```yaml
-jobs:
-  validate-pr:
-    uses: org-name/repo-name/.github/workflows/pr-template-validation.yaml@main
-    with:
-      pr_number: ${{ github.event.pull_request.number }}
-      task_id_pattern: "STR-\\d+" # Optional
-```
-
-**Note:** Replace `org-name/repo-name` with the actual organization and repository name where the workflows are stored (e.g., `ProgaTech/notion-release-manager`).
-
-### Step 4: Create Your Deployment Workflows
-
-Create workflows in your repository that call these reusable workflows from the central repository. Replace `org-name/repo-name` with the actual organization and repository name where the workflows are stored (e.g., `ProgaTech/release-automation-demo`).
-
-**`.github/workflows/deploy-dev.yaml`** - Call after deploying to dev:
-
-```yaml
-name: Deploy to Dev
+name: Release Automation
 
 on:
   pull_request:
     types: [closed]
-    branches: [dev]
+    branches: [dev, stage, main]
   workflow_dispatch:
     inputs:
-      pr_number:
-        description: "PR number that triggered this deployment (optional)"
-        required: false
-        type: string
+      release_type:
+        type: choice
+        options: [dev, stage, prod]
+        description: 'Type of release to cut'
+      hotfix:
+        type: boolean
+        default: false
+        description: 'Single repo release (hotfix)'
 
 permissions:
   contents: write
   pull-requests: read
 
 jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Deploy to Dev Environment
-        run: |
-          # Add your deployment commands here
-          # e.g., npm run build, deploy to AWS, etc.
-
-  update-notion:
-    needs: deploy
-    if: github.event.pull_request.merged == true || inputs.pr_number != ''
-    uses: org-name/repo-name/.github/workflows/release-dev.yaml@main
+  # Store PR metadata on any merge
+  store-pr-metadata:
+    if: github.event.pull_request.merged == true
+    uses: ProgaTech/notion-release-manager/.github/workflows/on-pr-merge.yml@main
     with:
-      pr_number: ${{ inputs.pr_number || github.event.pull_request.number }}
-    secrets:
-      NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
-      NOTION_TASKS_DATABASE_ID: ${{ secrets.NOTION_TASKS_DATABASE_ID }}
-      NOTION_RELEASES_DATABASE_ID: ${{ secrets.NOTION_RELEASES_DATABASE_ID }}
-```
+      pr_number: ${{ github.event.pull_request.number }}
+      repo_identifier: api  # Change per repo
+    secrets: inherit
 
-**`.github/workflows/deploy-main.yaml`** - Call after deploying to production:
-
-```yaml
-name: Deploy to Main
-
-on:
-  push:
-    branches: [main]
-  workflow_dispatch: {}
-
-permissions:
-  contents: write
-  pull-requests: read
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Deploy to Production
-        run: |
-          # Add your deployment commands here
-
-  promote-release:
-    needs: deploy
-    uses: org-name/repo-name/.github/workflows/release-main.yaml@main
+  # Auto-cut dev release
+  auto-dev-release:
+    needs: store-pr-metadata
+    if: github.base_ref == 'dev'
+    uses: ProgaTech/notion-release-manager/.github/workflows/cut-release.yml@main
     with:
-      repo_identifier: "api" # Required: identifier for this repo (e.g., "api", "ui", "web")
-      required_repos: "api,ui" # Optional: comma-separated list of repo identifiers that must be included for a release to be complete (e.g., "api,ui" or "api,ui,web")
-    secrets:
-      NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
-      NOTION_TASKS_DATABASE_ID: ${{ secrets.NOTION_TASKS_DATABASE_ID }}
-      NOTION_RELEASES_DATABASE_ID: ${{ secrets.NOTION_RELEASES_DATABASE_ID }}
+      release_type: dev
+      repo_identifier: api
+    secrets: inherit
+
+  # Auto-cut stage release
+  auto-stage-release:
+    needs: store-pr-metadata
+    if: github.base_ref == 'stage'
+    uses: ProgaTech/notion-release-manager/.github/workflows/cut-release.yml@main
+    with:
+      release_type: stage
+      repo_identifier: api
+    secrets: inherit
+
+  # Manual prod release
+  manual-prod-release:
+    if: github.event_name == 'workflow_dispatch' && inputs.release_type == 'prod'
+    uses: ProgaTech/notion-release-manager/.github/workflows/cut-release.yml@main
+    with:
+      release_type: prod
+      repo_identifier: api
+      single_repo_release: ${{ inputs.hotfix }}
+      required_repos: 'api,ui'  # Configure per project
+    secrets: inherit
+
+  # Notify on prod release
+  notify-prod:
+    needs: manual-prod-release
+    if: needs.manual-prod-release.outputs.release_name != ''
+    uses: ProgaTech/notion-release-manager/.github/workflows/notify-release.yml@main
+    with:
+      release_name: ${{ needs.manual-prod-release.outputs.release_name }}
+      release_type: prod
+    secrets: inherit
 ```
 
 ---
 
-## 📖 How to Use
+## How It Works
 
-### Creating PRs for Development
+### PR Metadata Extraction
 
-1. **Include task IDs in your PR title:**
+When a PR is merged to any branch:
 
+1. Extracts task IDs from PR title (e.g., `STR-123`)
+2. Parses PR body for:
+   - `## Release Notes` section
+   - `## Testing Notes` section
+   - `## Impact` section → Release Label
+3. Aggregates notes in Notion with source attribution:
    ```
-   feat: add payment processing STR-123 STR-456
+   **[api #123]**
+   Fixed authentication bug
+
+   **[ui #456]**
+   Updated login form
    ```
+4. Keeps highest release label (Major > Minor > Patch)
 
-   The workflow extracts task IDs using a regex pattern (default: `STR-\d+`). You can customize this via workflow inputs.
+### Release Cutting
 
-   **⚠️ Important:** The PR template validation workflow will **block merging** if your PR title doesn't contain at least one task ID matching the pattern.
+When cutting a release, git is queried to find included tasks:
 
-2. **Fill in the PR description using the template:**
+| Release Type | Git Query |
+|--------------|-----------|
+| Dev | Commits in `dev` NOT in `stage` or `main` |
+| Stage | Commits in `stage` NOT in `main` |
+| Prod | Commits in `main` since last prod tag |
 
-   The PR template validation workflow ensures your PR description includes all required sections. Here's what's required:
+This handles all scenarios correctly:
+- Regular flow: task → dev → stage → main
+- Direct to stage (skip dev)
+- Direct to main (hotfix)
+- Backmerge sync (main → stage)
 
-   **Required for all PRs:**
+### Multi-Repo Coordination
 
-   - **Description** - Brief description of changes
+For projects with multiple repos (e.g., api + ui):
 
-   **Required for primary PRs (optional for secondary PRs with dependent PRs):**
+**Normal release:**
+1. Repo A triggers → creates version 1.2.0 "Partially Released"
+2. Repo B triggers → joins 1.2.0 → status becomes "Released"
 
-   - **Impact** - Select one: Major, Minor, or Patch
-   - **Release Notes** - What users should know about this change
-   - **Testing Notes** - How this PR was tested
+**Hotfix (single repo):**
+1. Repo A triggers with `single_repo_release: true`
+2. Creates version 1.2.1 immediately "Released"
+3. Repo B later bumps from 1.2.1 on next release
 
-   **Example PR description:**
-
-   ```markdown
-   ## Description
-
-   <!-- Provide a brief description of the changes in this PR -->
-
-   Adds payment processing functionality with support for credit cards and PayPal.
-
-   ## Impact
-
-   <!-- Select the version strategy for this PR -->
-
-   - [ ] **Major** - Breaking changes, incompatible API changes
-   - [x] **Minor** - New features, backward-compatible additions
-   - [ ] **Patch** - Bug fixes, backward-compatible changes
-
-   ## Release Notes
-
-   <!-- Describe what users should know about this change. This will be synced to Notion. -->
-
-   Added new payment processing flow with support for credit cards and PayPal.
-
-   ## Testing Notes
-
-   <!-- Describe how this PR was tested and any important testing considerations -->
-
-   - Tested credit card payment flow
-   - Verified PayPal integration
-   - Checked error handling for declined cards
-   - Manual testing on staging environment
-   ```
-
-3. **Add Dependent PRs section** (if task spans multiple repositories):
-
-   ```markdown
-   ## Dependent PRs
-
-   - https://github.com/owner/api/pull/200
-   - https://github.com/owner/mobile/pull/300
-   ```
-
-   ```markdown
-   ## Dependent PRs
-
-   <!-- List any PRs that must be merged before or alongside this PR -->
-
-   - https://github.com/owner/api/pull/200
-   - https://github.com/owner/mobile/pull/300
-   ```
-
-   **Note:** Only full GitHub URLs are supported. Use the format: `https://github.com/owner/repo/pull/123`. Other formats (like `owner/repo#123` or `#123`) are not supported.
-
-   **Secondary PRs:** If your PR depends on another PR (e.g., UI depends on API), you can list it in the Dependent PRs section. For secondary PRs:
-
-   - Impact, Release Notes, and Testing Notes become **optional**
-   - The validation workflow will show warnings instead of errors for missing optional fields
-   - All details should be explained in the master/primary PR
-
-4. **PR Validation:**
-
-   - When you open or update the PR, the validation workflow automatically runs
-   - Check the "PR Template Validation" status check on your PR
-   - If validation fails, the PR cannot be merged until all errors are fixed
-   - Fix any errors shown in the check output and push updates
-
-5. **Merge PR to `dev` branch:**
-   - Your deployment workflow runs
-   - After successful deployment, `release-dev.yaml` is called
-   - Notion tasks are updated automatically
-
-### Multi-Repository Tasks
-
-When a task spans multiple repositories (e.g., web and API):
-
-1. **Add Dependent PRs section** to each PR description with full GitHub URLs:
-
-   ```markdown
-   ## Dependent PRs
-
-   - https://github.com/owner/web/pull/100
-   - https://github.com/owner/api/pull/200
-   ```
-
-   **Important:** Only full GitHub URLs are supported (e.g., `https://github.com/owner/repo/pull/123`).
-
-2. **When a PR is merged to dev:**
-
-   - Workflow checks ALL dependent PRs (including the current one)
-   - **If all merged**: Task is set to `Release Stage = "On Dev"` ✅
-   - **If partially merged**: Task is set to `Release Stage = "Partially On Dev"` ⏳
-
-3. **When the final PR is merged**: The task automatically promotes to "On Dev" since all PRs are now merged
-
-4. **Production promotion**: Only tasks with `Release Stage = "On Dev"` in "Next Release" are promoted to production
-
-**Example:**
-
-- Task STR-123 has PRs in `web` repo (#100) and `api` repo (#200)
-- PR #100 description includes: `## Dependent PRs\n- https://github.com/owner/api/pull/200` (full URL format)
-- When PR #100 is merged: Checks both PRs → PR #200 still open → `Release Stage = "Partially On Dev"`
-- When PR #200 is merged: Checks both PRs → All merged → `Release Stage = "On Dev"`, **ready for production**
-
-### Production Release
-
-1. **Merge to `main` branch** (usually via PR from `dev`)
-
-2. **Automatic release:**
-   - Your deployment workflow runs
-   - After successful deployment, `release-main.yaml` is called
-   - Version is calculated from Notion's latest release + task labels (shared across all repos)
-   - Release is created or found in Notion with this version
-   - This repository is added to the release's "Repositories" list
-   - All "On Dev" tasks in "Next Release" are promoted to the new version (only by first repo)
-   - Git tag `vX.Y.Z` is created for this repository (only if not already tagged)
-   - Release status is updated: "Partially Released" if not all repos are released, "Released" when all repos are released
-
-### Multi-Repository Release Synchronization
-
-When you have multiple repositories (e.g., API and UI) that share the same Notion databases:
-
-**How it works:**
-
-- All repos use the same Tasks and Releases databases in Notion
-- Version is calculated once based on ALL tasks in "Next Release" (regardless of which repo they came from)
-- When a repo triggers the release workflow:
-  1. Calculates the version (same calculation for all repos)
-  2. Creates or finds the release in Notion for that version
-  3. Checks if this repo is already in the "Repositories" list
-  4. If not already included:
-     - Adds this repo to the "Repositories" list
-     - Promotes tasks to production (only first repo does this)
-     - Creates git tag for this repo
-     - Updates release status based on number of repos included
-  5. If already included: Skips task promotion and tag creation (idempotent)
-
-**Release Status:**
-
-- **"Partially Released"**: When not all required repos have been released yet
-- **"Released"**: When all required repos (specified in `required_repos`) have been released
-
-**Example scenarios:**
-
-**Scenario 1: Both repos trigger (typical case with required_repos: "api,ui")**
-
-- Repo A triggers → calculates version 1.2.0 → creates release → adds "api" to Repositories → status: "Partially Released" (missing "ui") → promotes tasks → tags Repo A
-- Repo B triggers → calculates version 1.2.0 → finds existing release → adds "ui" to Repositories → status: "Released" (all required repos included) → skips tasks (already done) → tags Repo B
-
-**Scenario 2: Simultaneous triggers**
-
-- Both repos trigger at the same time → both calculate same version → first one creates release → second one finds it → both add themselves → both tag
-
-**Important:**
-
-- Each repo must provide a unique `repo_identifier` when calling the workflow
-- Set `required_repos` to a comma-separated list of all repo identifiers that must be included for a release to be complete (e.g., `"api,ui"`)
-- If `required_repos` is not specified or empty, the release will be marked as "Released" after the first repo
-- Add a "Repositories" property to your Releases database as a **Multi-select** type (required)
-- For single-repo setups, the Repositories column will always contain just one value
+**Safety check:** Cannot create hotfix if a partial release exists (prevents orphaning).
 
 ### Version Calculation
 
-The next version is determined by:
-
-- **Base version**: Latest "Released" version in Notion
-- **Bump type**: Highest Release Label found in "Next Release" tasks with `Release Stage = "On Dev"`
-  - If any task has `Major` → major bump (1.0.0 → 2.0.0)
-  - Else if any task has `Minor` → minor bump (1.0.0 → 1.1.0)
-  - Else → patch bump (1.0.0 → 1.0.1)
-
-**Important:** Only tasks with `Release Stage = "On Dev"` are considered for version calculation. Tasks with `Release Stage = "Partially On Dev"` are skipped.
+For prod releases:
+1. Gets latest "Released" version from Notion
+2. Collects release labels from all included tasks
+3. Bumps version based on highest label:
+   - Any Major → 1.0.0 → 2.0.0
+   - Any Minor → 1.0.0 → 1.1.0
+   - Otherwise → 1.0.0 → 1.0.1
 
 ---
 
-## ⚙️ Customization
+## Workflow Reference
 
-All workflows support many input parameters for customization. See the workflow files for all available options, including:
+### `on-pr-merge.yml`
 
-### PR Template Validation Workflow
+Stores PR metadata in Notion.
 
-- **`task_id_pattern`** - Regex pattern for task IDs in PR title (default: `STR-\d+`)
-  - Example: `"PROJ-\\d+"` for `PROJ-123` format
-  - Example: `"[A-Z]+-\\d+"` for any uppercase prefix
+**Inputs:**
 
-### Release Workflows
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `pr_number` | Yes | - | PR number to process |
+| `repo_identifier` | Yes | - | Unique repo ID (e.g., "api") |
+| `task_id_pattern` | No | `STR-\d+` | Regex for task IDs |
+| `task_id_property` | No | `ID` | Notion property name |
+| `task_id_prefix` | No | `STR-` | Task ID prefix |
 
-- Branch names (dev/main)
-- Task ID pattern (regex)
-- Property names in Notion
-- Release stage values
-- Release label values
-- **`repo_identifier`** - Required: Identifier for this repository (e.g., "api", "ui", "web")
-- **`required_repos`** - Optional: Comma-separated list of repo identifiers that must be included for a release to be complete (e.g., "api,ui" or "api,ui,web"). If not specified, release is marked as "Released" after first repo
-- **`repos_property`** - Optional: Notion property name for tracking repos (default: "Repositories")
-- **`status_partially_released`** - Optional: Status value for partially released versions (default: "Partially Released")
-- And more...
+**Outputs:**
+
+| Output | Description |
+|--------|-------------|
+| `task_ids` | Comma-separated task IDs |
+| `has_tasks` | Whether tasks were found |
+
+### `cut-release.yml`
+
+Cuts a release for any stage.
+
+**Inputs:**
+
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `release_type` | Yes | - | `dev`, `stage`, or `prod` |
+| `repo_identifier` | Yes | - | Unique repo ID |
+| `single_repo_release` | No | `false` | Hotfix mode |
+| `required_repos` | No | `''` | Required repos for complete release |
+| `force_override_partial` | No | `false` | Override partial release check |
+| `dev_branch` | No | `dev` | Dev branch name |
+| `stage_branch` | No | `stage` | Stage branch name |
+| `prod_branch` | No | `main` | Prod branch name |
+
+**Outputs:**
+
+| Output | Description |
+|--------|-------------|
+| `release_name` | Release name/version |
+| `release_id` | Notion page ID |
+| `release_status` | Released or Partially Released |
+| `task_count` | Number of tasks |
+| `is_new_release` | Whether new release was created |
+| `tag_name` | Git tag (prod only) |
+
+### `notify-release.yml`
+
+Sends Slack notification.
+
+**Inputs:**
+
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `release_name` | Yes | - | Release to notify about |
+| `release_type` | Yes | - | Type for emoji/formatting |
+
+**Outputs:**
+
+| Output | Description |
+|--------|-------------|
+| `success` | Whether notification sent |
 
 ---
 
-## 🧱 Notion Schema Reference
+## PR Template
 
-### Tasks Database
+Use this template in your PRs:
 
-- **ID** (Number, unique) - Task identifier (e.g., 101 for STR-101)
-- **Release Stage** (Select) - `On Dev` (all PRs merged) / `Partially On Dev` (some PRs pending) / `On Prod` / `Not Scheduled`
-- **Release** (Relation) - Links to Releases database
-- **Release Notes** (Text) - Optional notes from PR body (parsed from "## Release Notes" section)
-- **Testing Notes** (Text) - Optional testing instructions from PR body (parsed from "## Testing Notes" section)
-- **Release Label** (Select) - `Major` / `Minor` / `Patch` (parsed from "## Impact" section)
+```markdown
+## Description
 
-### Releases Database
+Brief description of changes.
 
-- **Version** (Title) - Semantic version (e.g., "1.10.0")
-- **Status** (Select) - `Next` (pending) / `Partially Released` (some repos released) / `Released` (all repos released)
-- **Release Date** (Date) - Optional release date
-- **Repositories** (Multi-select, required) - List of repositories included in this release (e.g., "api", "ui", "web"). For single-repo setups, this will always contain one value
+## Impact
 
----
+- [ ] **Major** - Breaking changes
+- [ ] **Minor** - New features
+- [x] **Patch** - Bug fixes
 
-## 🧪 Testing
+## Release Notes
 
-### Testing PR Template Validation
+What users should know about this change.
 
-1. Create a PR without a task ID in the title → Should fail validation
-2. Create a PR with task ID but missing Description section → Should fail validation
-3. Create a PR with all required sections → Should pass validation
-4. Create a secondary PR (with Dependent PRs) without Impact/Release Notes/Testing Notes → Should pass with warnings
+## Testing Notes
 
-### Testing Release Workflows
-
-1. Create a test release in Notion with version `0.0.0` and status `Released`
-2. Create a PR with task IDs in the title and merge to `dev`
-3. Verify tasks appear in "Next Release" with stage "On Dev"
-4. Merge to `main` and verify:
-   - New version is created (e.g., `0.0.1`)
-   - Tasks are promoted to the new version
-   - Git tag is created
+How this was tested.
+```
 
 ---
 
-## 🔐 Required Secrets
+## Configuration Examples
 
-| Secret                        | Description                            |
-| ----------------------------- | -------------------------------------- |
-| `NOTION_API_TOKEN`            | Notion integration token               |
-| `NOTION_TASKS_DATABASE_ID`    | Tasks database ID (from Notion URL)    |
-| `NOTION_RELEASES_DATABASE_ID` | Releases database ID (from Notion URL) |
+### Single Repo Setup
+
+```yaml
+- uses: ProgaTech/notion-release-manager/.github/workflows/cut-release.yml@main
+  with:
+    release_type: prod
+    repo_identifier: myapp
+    # No required_repos = released immediately
+```
+
+### Multi-Repo Setup
+
+```yaml
+# In api repo
+- uses: ProgaTech/notion-release-manager/.github/workflows/cut-release.yml@main
+  with:
+    release_type: prod
+    repo_identifier: api
+    required_repos: 'api,ui,worker'
+
+# In ui repo
+- uses: ProgaTech/notion-release-manager/.github/workflows/cut-release.yml@main
+  with:
+    release_type: prod
+    repo_identifier: ui
+    required_repos: 'api,ui,worker'
+```
+
+### Custom Task ID Pattern
+
+```yaml
+- uses: ProgaTech/notion-release-manager/.github/workflows/on-pr-merge.yml@main
+  with:
+    pr_number: ${{ github.event.pull_request.number }}
+    repo_identifier: api
+    task_id_pattern: 'PROJ-\d+'
+    task_id_prefix: 'PROJ-'
+```
+
+### Different Branch Names
+
+```yaml
+- uses: ProgaTech/notion-release-manager/.github/workflows/cut-release.yml@main
+  with:
+    release_type: prod
+    repo_identifier: api
+    dev_branch: develop
+    stage_branch: staging
+    prod_branch: master
+```
+
+---
+
+## Migrating from Previous Version
+
+If upgrading from the previous architecture:
+
+1. **Update Notion schema:**
+   - Add `Type` property (select: dev/stage/prod) to Releases database
+   - Add `Releases` relation (many-to-many) to Tasks database
+   - Keep existing properties for backward compatibility
+
+2. **Update consumer repo workflows:**
+   - Replace old workflow calls with new ones
+   - Update input parameters as needed
+
+3. **Test in isolation:**
+   - Create test PR and verify metadata extraction
+   - Run dev release and verify release record created
+   - Test multi-repo coordination
+
+See `docs/plans/2026-02-04-release-automation-redesign.md` for full migration details.
+
+---
+
+## Troubleshooting
+
+### No tasks found in release
+
+- Verify task IDs are in commit messages/PR titles
+- Check that branches exist and have the expected commits
+- Run `git log dev ^stage ^main` locally to see what would be included
+
+### Partial release collision error
+
+- A normal release is in progress, can't create hotfix
+- Either complete the normal release or mark it as Released in Notion
+- Use `force_override_partial: true` to override (will orphan partial)
+
+### Version not incrementing
+
+- Check that tasks have Release Label set
+- Verify latest "Released" version in Notion is correct
+- Ensure prod release (not dev/stage) is being triggered
+
+---
+
+## File Structure
+
+```
+notion-release-manager/
+├── .github/
+│   ├── actions/
+│   │   ├── pr-metadata-extractor/
+│   │   ├── release-cutter/
+│   │   └── slack-notifier/
+│   └── workflows/
+│       ├── on-pr-merge.yml
+│       ├── cut-release.yml
+│       └── notify-release.yml
+├── src/
+│   ├── notion-client.js
+│   ├── git-queries.js
+│   ├── notes-aggregator.js
+│   ├── version-calculator.js
+│   └── index.js
+└── docs/
+    └── plans/
+```
