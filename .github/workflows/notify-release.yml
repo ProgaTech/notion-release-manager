@@ -6,35 +6,35 @@ on:
       release_name:
         type: string
         required: true
-        description: 'Name/version of the release to notify about'
+        description: "Name/version of the release to notify about"
       release_type:
         type: string
         required: true
-        description: 'Type of release: dev, stage, or prod'
+        description: "Type of release: dev, stage, or prod"
       task_id_property:
         type: string
-        default: 'ID'
-        description: 'Notion property name for task ID'
+        default: "ID"
+        description: "Notion property name for task ID"
       task_id_prefix:
         type: string
-        default: 'STR-'
-        description: 'Prefix for task IDs'
+        default: "STR-"
+        description: "Prefix for task IDs"
     secrets:
       NOTION_API_TOKEN:
         required: true
-        description: 'Notion API token'
+        description: "Notion API token"
       NOTION_RELEASES_DATABASE_ID:
         required: true
-        description: 'Notion Releases database ID'
+        description: "Notion Releases database ID"
       NOTION_TASKS_DATABASE_ID:
         required: true
-        description: 'Notion Tasks database ID'
+        description: "Notion Tasks database ID"
       SLACK_WEBHOOK_URL:
         required: true
-        description: 'Slack webhook URL'
+        description: "Slack webhook URL"
     outputs:
       success:
-        description: 'Whether notification was sent successfully'
+        description: "Whether notification was sent successfully"
         value: ${{ jobs.notify.outputs.success }}
 
 jobs:
@@ -43,15 +43,9 @@ jobs:
     outputs:
       success: ${{ steps.send-notification.outputs.success }}
     steps:
-      - name: Checkout release manager
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/notion-release-manager
-          path: release-manager
-
       - name: Send Slack Notification
         id: send-notification
-        uses: ./release-manager/.github/actions/slack-notifier
+        uses: ProgaTech/notion-release-manager/.github/actions/slack-notifier@feature/refine-workflow'
         with:
           release_name: ${{ inputs.release_name }}
           release_type: ${{ inputs.release_type }}

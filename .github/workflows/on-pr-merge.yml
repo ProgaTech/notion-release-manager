@@ -6,36 +6,36 @@ on:
       pr_number:
         type: string
         required: true
-        description: 'PR number to process'
+        description: "PR number to process"
       repo_identifier:
         type: string
         required: true
-        description: 'Unique identifier for this repo (e.g., api, ui)'
+        description: "Unique identifier for this repo (e.g., api, ui)"
       task_id_pattern:
         type: string
         default: 'STR-\d+'
-        description: 'Regex pattern for task IDs in PR title'
+        description: "Regex pattern for task IDs in PR title"
       task_id_property:
         type: string
-        default: 'ID'
-        description: 'Notion property name for task ID'
+        default: "ID"
+        description: "Notion property name for task ID"
       task_id_prefix:
         type: string
-        default: 'STR-'
-        description: 'Prefix for task IDs'
+        default: "STR-"
+        description: "Prefix for task IDs"
     secrets:
       NOTION_API_TOKEN:
         required: true
-        description: 'Notion API token'
+        description: "Notion API token"
       NOTION_TASKS_DATABASE_ID:
         required: true
-        description: 'Notion Tasks database ID'
+        description: "Notion Tasks database ID"
     outputs:
       task_ids:
-        description: 'Comma-separated list of extracted task IDs'
+        description: "Comma-separated list of extracted task IDs"
         value: ${{ jobs.store-metadata.outputs.task_ids }}
       has_tasks:
-        description: 'Whether any tasks were found'
+        description: "Whether any tasks were found"
         value: ${{ jobs.store-metadata.outputs.has_tasks }}
 
 jobs:
@@ -45,15 +45,9 @@ jobs:
       task_ids: ${{ steps.extract.outputs.task_ids }}
       has_tasks: ${{ steps.extract.outputs.has_tasks }}
     steps:
-      - name: Checkout release manager
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/notion-release-manager
-          path: release-manager
-
       - name: Extract and Store PR Metadata
         id: extract
-        uses: ./release-manager/.github/actions/pr-metadata-extractor
+        uses: ProgaTech/notion-release-manager/.github/actions/pr-metadata-extractor@feature/refine-workflow'
         with:
           pr_number: ${{ inputs.pr_number }}
           repo_identifier: ${{ inputs.repo_identifier }}
