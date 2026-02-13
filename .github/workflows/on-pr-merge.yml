@@ -47,7 +47,7 @@ jobs:
     steps:
       - name: Extract and Store PR Metadata
         id: extract
-        uses: ProgaTech/notion-release-manager/.github/actions/pr-metadata-extractor@feature/refine-workflow'
+        uses: ProgaTech/notion-release-manager/.github/actions/pr-metadata-extractor@feature/refine-workflow
         with:
           pr_number: ${{ inputs.pr_number }}
           repo_identifier: ${{ inputs.repo_identifier }}

@@ -96,7 +96,7 @@ jobs:
 
       - name: Cut Release
         id: cut-release
-        uses: ProgaTech/notion-release-manager/.github/actions/release-cutter@feature/refine-workflow'
+        uses: ProgaTech/notion-release-manager/.github/actions/release-cutter@feature/refine-workflow
         with:
           release_type: ${{ inputs.release_type }}
           repo_identifier: ${{ inputs.repo_identifier }}
