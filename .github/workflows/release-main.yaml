@@ -167,7 +167,7 @@ jobs:
               const res = await fetch(`${notionApi}/pages`, {
                 method: "POST",
                 headers,
-                body: JSON.stringify({ parent: { database_id: db }, properties, template: { type: "default" } })
+                body: JSON.stringify({ parent: { database_id: db }, properties })
               });
               if (!res.ok) throw new Error(`Create failed: ${res.status} ${await res.text()}`);
               return res.json();
