@@ -7,7 +7,6 @@ const { NotionClient } = require(path.join(srcPath, 'notion-client'));
 const {
   getReleaseConfig,
   getTasksFromGitRange,
-  getLatestProdTag,
   createTag,
   tagExists,
 } = require(path.join(srcPath, 'git-queries'));
@@ -17,9 +16,6 @@ async function main() {
   const {
     RELEASE_TYPE,
     REPO_IDENTIFIER,
-    SINGLE_REPO_RELEASE,
-    REQUIRED_REPOS,
-    FORCE_OVERRIDE_PARTIAL,
     DEV_BRANCH,
     STAGE_BRANCH,
     PROD_BRANCH,
@@ -31,15 +27,9 @@ async function main() {
     TASK_ID_PREFIX,
   } = process.env;
 
-  const isSingleRepoRelease = SINGLE_REPO_RELEASE === 'true';
-  const forceOverride = FORCE_OVERRIDE_PARTIAL === 'true';
-  const requiredRepos = REQUIRED_REPOS ? REQUIRED_REPOS.split(',').map(r => r.trim()).filter(Boolean) : [];
-
   console.log(`\n=== Release Cutter ===`);
   console.log(`Release Type: ${RELEASE_TYPE}`);
   console.log(`Repo: ${REPO_IDENTIFIER}`);
-  console.log(`Single Repo Release: ${isSingleRepoRelease}`);
-  console.log(`Required Repos: ${requiredRepos.join(', ') || 'none'}`);
 
   // Initialize Notion client
   const notion = new NotionClient(NOTION_TOKEN, {
@@ -54,6 +44,9 @@ async function main() {
     dev: DEV_BRANCH,
     stage: STAGE_BRANCH,
     prod: PROD_BRANCH,
+  }, {
+    dev: process.env.DEV_RELEASE_NAME,
+    stage: process.env.STAGE_RELEASE_NAME,
   });
 
   console.log(`\nTarget branch: ${config.targetBranch}`);
@@ -72,8 +65,84 @@ async function main() {
 
   console.log(`\nFound ${taskIds.length} tasks: ${taskIds.join(', ') || 'none'}`);
 
+  // Route to the appropriate handler
+  if (RELEASE_TYPE === 'prod') {
+    await handleProdRelease({ notion, taskIds, env: process.env });
+  } else {
+    await handleDevStageRelease({ notion, taskIds, releaseName: config.releaseName, releaseType: RELEASE_TYPE });
+  }
+}
+
+// ============================================================
+// Dev/Stage: single rolling row that always reflects current state
+// ============================================================
+
+async function handleDevStageRelease({ notion, taskIds, releaseName, releaseType }) {
+  const statusName = releaseType === 'dev' ? 'Dev Release' : 'Next Release';
+
+  // Find or create the single row for this release type
+  let release = await notion.findReleaseByName(releaseName);
+
+  if (release) {
+    console.log(`\nFound existing "${releaseName}" row — updating`);
+  } else {
+    console.log(`\nCreating "${releaseName}" placeholder row`);
+    release = await notion.createRelease(releaseName, releaseType, [], null, statusName);
+  }
+
+  // Resolve task IDs to Notion page IDs
+  const taskPageIds = [];
+  for (const taskId of taskIds) {
+    try {
+      const task = await notion.findTaskById(taskId);
+      if (task) {
+        taskPageIds.push(task.id);
+        console.log(`Resolved ${taskId} → ${task.id}`);
+      } else {
+        console.log(`Task ${taskId} not found in Notion — skipping`);
+      }
+    } catch (error) {
+      console.error(`Error resolving task ${taskId}:`, error.message);
+    }
+  }
+
+  // Replace task relations (full refresh from git)
+  console.log(`\nSetting ${taskPageIds.length} tasks on "${releaseName}" row`);
+  await notion.setReleaseTasks(release.id, taskPageIds);
+
+  // Update date and status
+  await notion.updateRelease(release.id, {
+    date: new Date().toISOString().split('T')[0],
+    status: statusName,
+  });
+
+  // Set outputs
+  setOutput('release_name', releaseName);
+  setOutput('release_id', release.id);
+  setOutput('release_status', statusName);
+  setOutput('task_count', taskPageIds.length.toString());
+  setOutput('is_new_release', 'false');
+  setOutput('tag_name', '');
+
+  console.log(`\n=== ${releaseName} Updated ===`);
+  console.log(`Tasks: ${taskPageIds.length}`);
+}
+
+// ============================================================
+// Prod: versioned releases with multi-repo coordination
+// ============================================================
+
+async function handleProdRelease({ notion, taskIds, env }) {
+  const isSingleRepoRelease = env.SINGLE_REPO_RELEASE === 'true';
+  const forceOverride = env.FORCE_OVERRIDE_PARTIAL === 'true';
+  const requiredRepos = env.REQUIRED_REPOS ? env.REQUIRED_REPOS.split(',').map(r => r.trim()).filter(Boolean) : [];
+  const repoIdentifier = env.REPO_IDENTIFIER;
+
+  console.log(`\nSingle Repo Release: ${isSingleRepoRelease}`);
+  console.log(`Required Repos: ${requiredRepos.join(', ') || 'none'}`);
+
   if (taskIds.length === 0) {
-    console.log('\nNo tasks found - nothing to release');
+    console.log('\nNo tasks found — nothing to release');
     setOutput('release_name', '');
     setOutput('release_id', '');
     setOutput('release_status', '');
@@ -83,20 +152,20 @@ async function main() {
     return;
   }
 
-  // Check for partial release collision (safety check)
-  const partialRelease = await notion.findPartiallyReleasedRelease(RELEASE_TYPE);
+  // Safety check: partial release collision
+  const partialRelease = await notion.findPartiallyReleasedRelease();
 
   if (partialRelease && isSingleRepoRelease && !forceOverride) {
     console.error(`\n!!! SAFETY CHECK FAILED !!!`);
-    console.error(`Cannot create single-repo release: ${RELEASE_TYPE} release "${partialRelease.name}" is partially released by [${partialRelease.repos.join(', ')}].`);
+    console.error(`Cannot create single-repo release: prod release "${partialRelease.name}" is partially released by [${partialRelease.repos.join(', ')}].`);
     console.error(`Either:`);
     console.error(`  1. Complete the existing release first`);
     console.error(`  2. Manually mark it as Released/Abandoned in Notion`);
-    console.error(`  3. Use force_override_partial=true to override (will orphan partial release)`);
+    console.error(`  3. Use force_override_partial=true to override`);
     process.exit(1);
   }
 
-  // Determine if we're joining an existing release or creating a new one
+  // Determine if joining existing or creating new
   let release;
   let isNewRelease = false;
   let releaseName;
@@ -107,43 +176,32 @@ async function main() {
     release = partialRelease;
     releaseName = partialRelease.name;
   } else {
-    // Create new release
+    // Create new versioned release
     isNewRelease = true;
 
-    if (RELEASE_TYPE === 'prod') {
-      // Calculate version for prod release
-      const tasks = await notion.getTasksByIds(taskIds);
-      const labels = tasks.map(t => t.releaseLabel).filter(Boolean);
+    const tasks = await notion.getTasksByIds(taskIds);
+    const labels = tasks.map(t => t.releaseLabel).filter(Boolean);
 
-      // Get latest version from Notion (source of truth)
-      const latestVersion = await notion.getLatestProdVersion();
-      console.log(`Latest prod version: ${latestVersion || 'none'}`);
+    const latestVersion = await notion.getLatestProdVersion();
+    console.log(`Latest prod version: ${latestVersion || 'none'}`);
 
-      releaseName = calculateNextVersion(latestVersion, labels);
-      console.log(`\nCalculated new version: ${releaseName}`);
-    } else {
-      // Dev/Stage use date-based names
-      releaseName = config.releaseNameFn();
-    }
+    releaseName = calculateNextVersion(latestVersion, labels);
+    console.log(`\nCalculated new version: ${releaseName}`);
 
-    console.log(`\nCreating new release: ${releaseName}`);
-
-    // Determine initial status
-    const initialRepos = [REPO_IDENTIFIER];
+    const initialRepos = [repoIdentifier];
     let initialStatus;
 
     if (isSingleRepoRelease) {
-      // Single repo release is immediately complete
       initialStatus = 'Released';
-    } else if (requiredRepos.length === 0 || (requiredRepos.length === 1 && requiredRepos[0] === REPO_IDENTIFIER)) {
-      // No other repos required
+    } else if (requiredRepos.length === 0 || (requiredRepos.length === 1 && requiredRepos[0] === repoIdentifier)) {
       initialStatus = 'Released';
     } else {
-      // Multi-repo, waiting for others
       initialStatus = 'Partially Released';
     }
 
-    const createdRelease = await notion.createRelease(releaseName, RELEASE_TYPE, initialRepos);
+    console.log(`\nCreating new release: ${releaseName} (${initialStatus})`);
+
+    const createdRelease = await notion.createRelease(releaseName, 'prod', initialRepos);
     release = {
       id: createdRelease.id,
       name: releaseName,
@@ -151,24 +209,21 @@ async function main() {
       status: initialStatus,
     };
 
-    // Update status if not default
     if (initialStatus !== 'Partially Released') {
       await notion.updateRelease(createdRelease.id, { status: initialStatus });
       release.status = initialStatus;
     }
   }
 
-  // If joining existing release, add this repo to the list
+  // If joining, update repos and status
   if (!isNewRelease) {
-    const updatedRepos = [...new Set([...release.repos, REPO_IDENTIFIER])];
+    const updatedRepos = [...new Set([...release.repos, repoIdentifier])];
 
-    // Check if all required repos are now present
     let newStatus = release.status;
     if (requiredRepos.length > 0) {
       const allPresent = requiredRepos.every(r => updatedRepos.includes(r));
       newStatus = allPresent ? 'Released' : 'Partially Released';
     } else {
-      // No required repos specified - mark as released
       newStatus = 'Released';
     }
 
@@ -194,20 +249,20 @@ async function main() {
         await notion.linkTaskToRelease(task.id, release.id);
         console.log(`Linked task ${taskId}`);
       } else {
-        console.log(`Task ${taskId} not found in Notion - skipping`);
+        console.log(`Task ${taskId} not found in Notion — skipping`);
       }
     } catch (error) {
       console.error(`Error linking task ${taskId}:`, error.message);
     }
   }
 
-  // Create git tag for prod releases
+  // Create git tag
   let tagName = '';
-  if (RELEASE_TYPE === 'prod' && isNewRelease) {
+  if (isNewRelease) {
     tagName = getTagName(releaseName);
 
     if (tagExists(tagName)) {
-      console.log(`\nTag ${tagName} already exists - skipping`);
+      console.log(`\nTag ${tagName} already exists — skipping`);
     } else {
       console.log(`\nCreating git tag: ${tagName}`);
       const tagCreated = createTag(tagName, `Release ${releaseName}`);

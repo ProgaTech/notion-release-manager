@@ -42,8 +42,8 @@ async function main() {
   const releaseData = {
     name: notion.extractTitle(release.properties.Name),
     type: notion.extractSelect(release.properties.Type),
-    status: notion.extractSelect(release.properties.Status),
-    repos: notion.extractMultiSelect(release.properties.Repos),
+    status: notion.extractStatus(release.properties.Status),
+    repos: notion.extractMultiSelect(release.properties.Repositories),
     date: notion.extractDate(release.properties.Date),
   };
 

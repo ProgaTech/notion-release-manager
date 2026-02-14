@@ -19,8 +19,9 @@ This package provides modular, reusable workflows for release management:
 The system uses **git branches as the source of truth** for determining what's in each release:
 
 - **PR merge** → Stores metadata only (notes, labels) - no stage tracking
-- **Release cut** → Queries git to find included tasks, creates release record
-- **Stage status** → Derived from release links, not stored on tasks
+- **Dev/Stage release** → Queries git, updates a single rolling "Dev" / "Stage" row in Notion
+- **Prod release** → Queries git, creates a versioned release record with multi-repo coordination
+- **Stage status** → Derived from which row a task is linked to, not stored on tasks
 
 This approach eliminates race conditions and state synchronization issues.
 
@@ -43,22 +44,22 @@ This approach eliminates race conditions and state synchronization issues.
 | Property | Type | Purpose |
 |----------|------|---------|
 | Task ID | Title | Task identifier (e.g., "STR-101") |
-| ID | Number | Numeric ID for queries |
+| ID | Unique ID | Auto-generated ID with prefix (e.g., "STR-101") |
 | Release Notes | Rich Text | Aggregated from PRs |
 | Testing Notes | Rich Text | Aggregated from PRs |
 | Release Label | Select | Major / Minor / Patch |
-| Releases | Relation | Links to Releases DB |
+| Release | Relation | Links to Releases DB |
 
 **Releases Database:**
 
 | Property | Type | Purpose |
 |----------|------|---------|
-| Name | Title | Version or date-based name |
-| Type | Select | dev / stage / prod |
-| Status | Select | Released / Partially Released |
-| Repos | Multi-select | Repos included in release |
+| Name | Title | Version or fixed name ("Dev", "Stage", "1.2.0") |
+| Status | Status | Dev Release / Next Release / Partially Released / Released |
+| Repositories | Multi-select | Repos included in release (prod only) |
 | Date | Date | Release date |
 | Tasks | Relation | Linked tasks |
+| Type | Select | (Optional) dev / stage / prod — for Notion views/grouping |
 
 ### 2. Configure GitHub Secrets
 
@@ -176,11 +177,15 @@ When a PR is merged to any branch:
 
 When cutting a release, git is queried to find included tasks:
 
-| Release Type | Git Query |
-|--------------|-----------|
-| Dev | Commits in `dev` NOT in `stage` or `main` |
-| Stage | Commits in `stage` NOT in `main` |
-| Prod | Commits in `main` since last prod tag |
+| Release Type | Git Query | Notion Behavior |
+|--------------|-----------|-----------------|
+| Dev | Commits in `dev` NOT in `stage` or `main` | Updates single "Dev" row (status: Dev Release) |
+| Stage | Commits in `stage` NOT in `main` | Updates single "Stage" row (status: Next Release) |
+| Prod | Commits in `main` since last prod tag | Creates versioned release (e.g., `1.2.0`) |
+
+**Dev/Stage** maintain a single rolling row each. Every time the release is cut, the row's task relations are **replaced** with whatever git currently says is in that branch. This gives you a live dashboard of "what's in dev" and "what's heading to prod". The row names are configurable via `dev_release_name` / `stage_release_name`.
+
+**Prod** creates a new versioned record per release with full multi-repo coordination.
 
 This handles all scenarios correctly:
 - Regular flow: task → dev → stage → main
@@ -188,7 +193,7 @@ This handles all scenarios correctly:
 - Direct to main (hotfix)
 - Backmerge sync (main → stage)
 
-### Multi-Repo Coordination
+### Multi-Repo Coordination (Prod Only)
 
 For projects with multiple repos (e.g., api + ui):
 
@@ -203,15 +208,17 @@ For projects with multiple repos (e.g., api + ui):
 
 **Safety check:** Cannot create hotfix if a partial release exists (prevents orphaning).
 
-### Version Calculation
+### Version Calculation (Prod Only)
 
-For prod releases:
+Versioning only applies to prod releases:
 1. Gets latest "Released" version from Notion
 2. Collects release labels from all included tasks
 3. Bumps version based on highest label:
    - Any Major → 1.0.0 → 2.0.0
    - Any Minor → 1.0.0 → 1.1.0
    - Otherwise → 1.0.0 → 1.0.1
+
+Dev and stage releases have no versioning — they use fixed names ("Dev", "Stage") by default.
 
 ---
 
@@ -248,12 +255,14 @@ Cuts a release for any stage.
 |-------|----------|---------|-------------|
 | `release_type` | Yes | - | `dev`, `stage`, or `prod` |
 | `repo_identifier` | Yes | - | Unique repo ID |
-| `single_repo_release` | No | `false` | Hotfix mode |
-| `required_repos` | No | `''` | Required repos for complete release |
+| `single_repo_release` | No | `false` | Hotfix mode (prod only) |
+| `required_repos` | No | `''` | Required repos for complete release (prod only) |
 | `force_override_partial` | No | `false` | Override partial release check |
 | `dev_branch` | No | `dev` | Dev branch name |
 | `stage_branch` | No | `stage` | Stage branch name |
 | `prod_branch` | No | `main` | Prod branch name |
+| `dev_release_name` | No | `Dev` | Display name for dev row in Notion |
+| `stage_release_name` | No | `Stage` | Display name for stage row in Notion |
 
 **Outputs:**
 
@@ -261,7 +270,7 @@ Cuts a release for any stage.
 |--------|-------------|
 | `release_name` | Release name/version |
 | `release_id` | Notion page ID |
-| `release_status` | Released or Partially Released |
+| `release_status` | Dev Release / Next Release / Partially Released / Released |
 | `task_count` | Number of tasks |
 | `is_new_release` | Whether new release was created |
 | `tag_name` | Git tag (prod only) |
@@ -352,6 +361,17 @@ How this was tested.
     task_id_prefix: 'PROJ-'
 ```
 
+### Custom Release Row Names
+
+```yaml
+- uses: ProgaTech/notion-release-manager/.github/workflows/cut-release.yml@main
+  with:
+    release_type: dev
+    repo_identifier: api
+    dev_release_name: 'Next Dev'
+    stage_release_name: 'Next Stage'
+```
+
 ### Different Branch Names
 
 ```yaml
@@ -371,9 +391,11 @@ How this was tested.
 If upgrading from the previous architecture:
 
 1. **Update Notion schema:**
-   - Add `Type` property (select: dev/stage/prod) to Releases database
-   - Add `Releases` relation (many-to-many) to Tasks database
-   - Keep existing properties for backward compatibility
+   - Change `Status` from Select to **Status** type with options: Dev Release, Next Release, Partially Released, Released
+   - Rename `Repos` to **Repositories** (multi-select)
+   - Rename `Releases` to **Release** (relation, on Tasks database)
+   - Change task ID property to **Unique ID** type (with prefix, e.g., "STR-")
+   - `Type` property (select: dev/stage/prod) is optional — kept for Notion views but not required by automation
 
 2. **Update consumer repo workflows:**
    - Replace old workflow calls with new ones
@@ -381,8 +403,8 @@ If upgrading from the previous architecture:
 
 3. **Test in isolation:**
    - Create test PR and verify metadata extraction
-   - Run dev release and verify release record created
-   - Test multi-repo coordination
+   - Run dev release and verify "Dev" row is created/updated
+   - Test multi-repo coordination on prod
 
 See `docs/plans/2026-02-04-release-automation-redesign.md` for full migration details.
 

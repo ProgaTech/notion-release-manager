@@ -35,6 +35,14 @@ on:
         type: string
         default: "main"
         description: "Name of prod/main branch"
+      dev_release_name:
+        type: string
+        default: "Dev"
+        description: "Display name for dev release row in Notion"
+      stage_release_name:
+        type: string
+        default: "Stage"
+        description: "Display name for stage release row in Notion"
       task_id_pattern:
         type: string
         default: 'STR-\d+'
@@ -106,6 +114,8 @@ jobs:
           dev_branch: ${{ inputs.dev_branch }}
           stage_branch: ${{ inputs.stage_branch }}
           prod_branch: ${{ inputs.prod_branch }}
+          dev_release_name: ${{ inputs.dev_release_name }}
+          stage_release_name: ${{ inputs.stage_release_name }}
           task_id_pattern: ${{ inputs.task_id_pattern }}
           task_id_property: ${{ inputs.task_id_property }}
           task_id_prefix: ${{ inputs.task_id_prefix }}

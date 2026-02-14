@@ -35,7 +35,7 @@ function getLatestProdTag() {
 /**
  * Get branch configuration for different release types
  */
-function getReleaseConfig(releaseType, branches = {}) {
+function getReleaseConfig(releaseType, branches = {}, releaseNames = {}) {
   const dev = branches.dev || 'dev';
   const stage = branches.stage || 'stage';
   const prod = branches.prod || 'main';
@@ -46,7 +46,7 @@ function getReleaseConfig(releaseType, branches = {}) {
         targetBranch: dev,
         excludeBranches: [stage, prod],
         sinceTag: null,
-        releaseNameFn: () => `Dev ${new Date().toISOString().split('T')[0]}`
+        releaseName: releaseNames.dev || 'Dev',
       };
 
     case 'stage':
@@ -54,7 +54,7 @@ function getReleaseConfig(releaseType, branches = {}) {
         targetBranch: stage,
         excludeBranches: [prod],
         sinceTag: null,
-        releaseNameFn: () => `Stage ${new Date().toISOString().split('T')[0]}`
+        releaseName: releaseNames.stage || 'Stage',
       };
 
     case 'prod':
@@ -62,7 +62,6 @@ function getReleaseConfig(releaseType, branches = {}) {
         targetBranch: prod,
         excludeBranches: [],
         sinceTag: getLatestProdTag(),
-        releaseNameFn: (version) => version
       };
 
     default:

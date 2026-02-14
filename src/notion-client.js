@@ -65,7 +65,7 @@ class NotionClient {
     const response = await this.request(`/databases/${this.tasksDbId}/query`, 'POST', {
       filter: {
         property: this.taskIdProperty,
-        number: { equals: numericId }
+        unique_id: { equals: numericId }
       }
     });
 
@@ -83,13 +83,11 @@ class NotionClient {
     return response.results[0] || null;
   }
 
-  async findPartiallyReleasedRelease(type) {
+  async findPartiallyReleasedRelease() {
     const response = await this.request(`/databases/${this.releasesDbId}/query`, 'POST', {
       filter: {
-        and: [
-          { property: 'Type', select: { equals: type } },
-          { property: 'Status', select: { equals: 'Partially Released' } }
-        ]
+        property: 'Status',
+        status: { equals: 'Partially Released' }
       },
       sorts: [{ property: 'Date', direction: 'descending' }],
       page_size: 1
@@ -101,9 +99,8 @@ class NotionClient {
     return {
       id: release.id,
       name: this.extractTitle(release.properties.Name),
-      type: this.extractSelect(release.properties.Type),
-      status: this.extractSelect(release.properties.Status),
-      repos: this.extractMultiSelect(release.properties.Repos),
+      status: this.extractStatus(release.properties.Status),
+      repos: this.extractMultiSelect(release.properties.Repositories),
       date: this.extractDate(release.properties.Date),
     };
   }
@@ -111,10 +108,8 @@ class NotionClient {
   async getLatestProdVersion() {
     const response = await this.request(`/databases/${this.releasesDbId}/query`, 'POST', {
       filter: {
-        and: [
-          { property: 'Type', select: { equals: 'prod' } },
-          { property: 'Status', select: { equals: 'Released' } }
-        ]
+        property: 'Status',
+        status: { equals: 'Released' }
       },
       sorts: [{ property: 'Date', direction: 'descending' }],
       page_size: 1
@@ -127,7 +122,7 @@ class NotionClient {
   async getTasksInRelease(releaseId) {
     const response = await this.request(`/databases/${this.tasksDbId}/query`, 'POST', {
       filter: {
-        property: 'Releases',
+        property: 'Release',
         relation: { contains: releaseId }
       }
     });
@@ -207,16 +202,18 @@ class NotionClient {
     });
   }
 
-  async createRelease(name, type, repos = [], date = null) {
+  async createRelease(name, type, repos = [], date = null, status = null) {
+    const defaultStatus = status || (repos.length > 0 ? 'Partially Released' : 'Next Release');
+
     const properties = {
       'Name': { title: [{ text: { content: name } }] },
       'Type': { select: { name: type } },
-      'Status': { select: { name: repos.length > 0 ? 'Partially Released' : 'Released' } },
+      'Status': { status: { name: defaultStatus } },
       'Date': { date: { start: date || new Date().toISOString().split('T')[0] } },
     };
 
     if (repos.length > 0) {
-      properties['Repos'] = { multi_select: repos.map(r => ({ name: r })) };
+      properties['Repositories'] = { multi_select: repos.map(r => ({ name: r })) };
     }
 
     const response = await this.request('/pages', 'POST', {
@@ -231,10 +228,13 @@ class NotionClient {
     const notionProperties = {};
 
     if (properties.status !== undefined) {
-      notionProperties['Status'] = { select: { name: properties.status } };
+      notionProperties['Status'] = { status: { name: properties.status } };
     }
     if (properties.repos !== undefined) {
-      notionProperties['Repos'] = { multi_select: properties.repos.map(r => ({ name: r })) };
+      notionProperties['Repositories'] = { multi_select: properties.repos.map(r => ({ name: r })) };
+    }
+    if (properties.date !== undefined) {
+      notionProperties['Date'] = { date: { start: properties.date } };
     }
 
     return await this.request(`/pages/${pageId}`, 'PATCH', {
@@ -245,7 +245,7 @@ class NotionClient {
   async linkTaskToRelease(taskPageId, releasePageId) {
     // Get current releases linked to task
     const task = await this.request(`/pages/${taskPageId}`);
-    const currentReleases = task.properties.Releases?.relation || [];
+    const currentReleases = task.properties.Release?.relation || [];
 
     // Check if already linked
     if (currentReleases.some(r => r.id === releasePageId)) {
@@ -255,8 +255,18 @@ class NotionClient {
     // Add new release to relation
     return await this.request(`/pages/${taskPageId}`, 'PATCH', {
       properties: {
-        'Releases': {
+        'Release': {
           relation: [...currentReleases, { id: releasePageId }]
+        }
+      }
+    });
+  }
+
+  async setReleaseTasks(releasePageId, taskPageIds) {
+    return await this.request(`/pages/${releasePageId}`, 'PATCH', {
+      properties: {
+        'Tasks': {
+          relation: taskPageIds.map(id => ({ id }))
         }
       }
     });
@@ -274,6 +284,10 @@ class NotionClient {
 
   extractSelect(property) {
     return property?.select?.name || null;
+  }
+
+  extractStatus(property) {
+    return property?.status?.name || null;
   }
 
   extractMultiSelect(property) {

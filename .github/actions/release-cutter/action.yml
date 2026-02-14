@@ -26,6 +26,12 @@ inputs:
   prod_branch:
     description: 'Name of prod/main branch'
     default: 'main'
+  dev_release_name:
+    description: 'Display name for the dev release row in Notion'
+    default: 'Dev'
+  stage_release_name:
+    description: 'Display name for the stage release row in Notion'
+    default: 'Stage'
   task_id_pattern:
     description: 'Regex pattern for task IDs'
     default: 'STR-\d+'
@@ -85,6 +91,8 @@ runs:
         DEV_BRANCH: ${{ inputs.dev_branch }}
         STAGE_BRANCH: ${{ inputs.stage_branch }}
         PROD_BRANCH: ${{ inputs.prod_branch }}
+        DEV_RELEASE_NAME: ${{ inputs.dev_release_name }}
+        STAGE_RELEASE_NAME: ${{ inputs.stage_release_name }}
         TASK_ID_PATTERN: ${{ inputs.task_id_pattern }}
         NOTION_TOKEN: ${{ inputs.notion_token }}
         RELEASES_DATABASE_ID: ${{ inputs.releases_database_id }}
