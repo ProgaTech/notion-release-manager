@@ -210,7 +210,7 @@ jobs:
                 const res = await queryNotionDB(releasesDB, {
                   filter: {
                     property: "Status",
-                    select: { equals: statusReleased }
+                    status: { equals: statusReleased }
                   },
                   sorts: [{ property: "Version", direction: "descending" }]
                 });
