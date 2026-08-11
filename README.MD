@@ -465,7 +465,36 @@ All workflows support many input parameters for customization. See the workflow 
 - **`required_repos`** - Optional: Comma-separated list of repo identifiers that must be included for a release to be complete (e.g., "api,ui" or "api,ui,web"). If not specified, release is marked as "Released" after first repo
 - **`repos_property`** - Optional: Notion property name for tracking repos (default: "Repositories")
 - **`status_partially_released`** - Optional: Status value for partially released versions (default: "Partially Released")
+- **`status_rank`** - Optional: Ordered, comma-separated status names, lowest first (default: `""`, guard disabled)
 - And more...
+
+### Preventing Backward Status Moves
+
+By default a task's status is whatever the most recent workflow run wrote. A task already at
+`On Prod` will be dragged back to `On Dev` if someone merges another PR referencing its task ID.
+
+Set `status_rank` on `release-dev.yaml` and `release-main.yaml` to stop that:
+
+```yaml
+with:
+  status_rank: "Partially On Dev,On Dev,On Prod"
+```
+
+The automation then skips any task whose current status ranks **above** the status the run wants to
+write. Skipping is total — that task gets no update at all, so its Release relation, Release Notes,
+Testing Notes and Release Label are left untouched too. The skip is logged per task in the step output.
+
+Rules worth knowing:
+
+- **Equal ranks still write.** Re-running against a task already at the target status refreshes its
+  notes and relation as before.
+- **Statuses missing from the list never block.** A task sitting in `Backlog`, an empty status, or a
+  target value you didn't list all fall through to the normal write. A typo in the list degrades to
+  the old behavior rather than silently halting all syncing.
+- **Leaving `status_rank` unset keeps the current behavior exactly.** Nothing to migrate.
+
+Use the same list in both workflows, and match the Notion status names exactly — comparison is
+case-sensitive, though surrounding whitespace is trimmed.
 
 ---
 
