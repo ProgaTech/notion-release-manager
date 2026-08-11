@@ -77,6 +77,11 @@ on:
         required: false
         type: string
         default: "Release Label"
+      status_rank:
+        description: "Ordered, comma-separated status names, lowest first (e.g. 'Partially On Dev,On Dev,On Prod'). When set, a task is never moved to a status ranked below its current one. Empty disables the guard."
+        required: false
+        type: string
+        default: ""
     secrets:
       NOTION_API_TOKEN:
         required: true
@@ -107,6 +112,7 @@ jobs:
       RELEASE_LABEL_PATCH: ${{ inputs.release_label_patch }}
       RELEASE_LABEL_PROPERTY: ${{ inputs.release_label_property }}
       RELEASE_STAGE_PARTIAL: ${{ inputs.release_stage_partial }}
+      STATUS_RANK: ${{ inputs.status_rank }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -375,6 +381,23 @@ jobs:
               return `${prInfo.repo}#${prInfo.number}`;
             }
 
+            // Current value of a status-type property, or null when unset
+            function currentStatusName(task, prop) {
+              const p = task.properties[prop];
+              return p && p.type === "status" && p.status ? p.status.name : null;
+            }
+
+            // True when writing `target` onto `task` would move it down the rank.
+            // Equal ranks proceed, so re-runs still refresh notes and relations.
+            // An empty rank list, or a status missing from it, always proceeds.
+            function isBackwardMove(task, prop, target) {
+              if (!STATUS_RANK.length) return false;
+              const from = STATUS_RANK.indexOf(currentStatusName(task, prop));
+              const to = STATUS_RANK.indexOf(target);
+              if (from === -1 || to === -1) return false;
+              return to < from;
+            }
+
             const TASK_ID_PROPERTY = process.env.TASK_ID_PROPERTY;
             const RELEASE_STAGE_PROP = process.env.RELEASE_STAGE_PROPERTY;
             const RELEASE_REL_PROP = process.env.RELEASE_PROPERTY;
@@ -384,6 +407,8 @@ jobs:
             const DEV_STAGE = process.env.RELEASE_STAGE_DEV;
             const PARTIAL_STAGE = process.env.RELEASE_STAGE_PARTIAL;
             const RELEASE_LABEL_PATCH = process.env.RELEASE_LABEL_PATCH;
+            const STATUS_RANK = (process.env.STATUS_RANK || "")
+              .split(",").map(s => s.trim()).filter(Boolean);
 
             const nextReleaseName = process.env.NEXT_RELEASE_NAME;
             const statusNext = process.env.RELEASE_STATUS_NEXT;
@@ -422,15 +447,21 @@ jobs:
                     continue;
                   }
                   const task = found.results[0];
+                  const targetStage = allMerged ? DEV_STAGE : PARTIAL_STAGE;
+
+                  if (isBackwardMove(task, RELEASE_STAGE_PROP, targetStage)) {
+                    console.log(`Task ${notionKey}: current status "${currentStatusName(task, RELEASE_STAGE_PROP)}" ranks above "${targetStage}" → skipping`);
+                    continue;
+                  }
+
                   const props = {
-                    [RELEASE_REL_PROP]: { relation: [{ id: nextReleaseId }] }
+                    [RELEASE_REL_PROP]: { relation: [{ id: nextReleaseId }] },
+                    [RELEASE_STAGE_PROP]: { status: { name: targetStage } }
                   };
 
                   if (allMerged) {
-                    props[RELEASE_STAGE_PROP] = { status: { name: DEV_STAGE } };
                     console.log(`Task ${notionKey}: All PRs merged → ${DEV_STAGE}`);
                   } else {
-                    props[RELEASE_STAGE_PROP] = { status: { name: PARTIAL_STAGE } };
                     console.log(`Task ${notionKey}: ${pendingPRs.length} PR(s) pending → ${PARTIAL_STAGE}`);
                   }
 

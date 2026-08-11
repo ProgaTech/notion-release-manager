@@ -77,6 +77,11 @@ on:
         required: false
         type: string
         default: "Partially Released"
+      status_rank:
+        description: "Ordered, comma-separated status names, lowest first (e.g. 'Partially On Dev,On Dev,On Prod'). When set, a task is never moved to a status ranked below its current one. Empty disables the guard."
+        required: false
+        type: string
+        default: ""
     secrets:
       NOTION_API_TOKEN:
         required: true
@@ -108,6 +113,7 @@ jobs:
       REPO_IDENTIFIER: ${{ inputs.repo_identifier }}
       REQUIRED_REPOS: ${{ inputs.required_repos }}
       STATUS_PARTIALLY_RELEASED: ${{ inputs.status_partially_released }}
+      STATUS_RANK: ${{ inputs.status_rank }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -306,6 +312,23 @@ jobs:
               return order[b] > order[a] ? b : a;
             }
 
+            // Current value of a status-type property, or null when unset
+            function currentStatusName(task, prop) {
+              const p = task.properties[prop];
+              return p && p.type === "status" && p.status ? p.status.name : null;
+            }
+
+            // True when writing `target` onto `task` would move it down the rank.
+            // Equal ranks proceed, so re-runs still refresh notes and relations.
+            // An empty rank list, or a status missing from it, always proceeds.
+            function isBackwardMove(task, prop, target) {
+              if (!STATUS_RANK.length) return false;
+              const from = STATUS_RANK.indexOf(currentStatusName(task, prop));
+              const to = STATUS_RANK.indexOf(target);
+              if (from === -1 || to === -1) return false;
+              return to < from;
+            }
+
             const RELEASE_STAGE_PROP = process.env.RELEASE_STAGE_PROPERTY;
             const RELEASE_REL_PROP = process.env.RELEASE_PROPERTY;
             const RELEASE_LABEL_PROP = process.env.RELEASE_LABEL_PROPERTY;
@@ -324,6 +347,8 @@ jobs:
               ? requiredReposStr.split(',').map(r => r.trim()).filter(r => r)
               : [];
             const statusPartiallyReleased = process.env.STATUS_PARTIALLY_RELEASED;
+            const STATUS_RANK = (process.env.STATUS_RANK || "")
+              .split(",").map(s => s.trim()).filter(Boolean);
 
             console.log(`Processing release for repo: ${repoIdentifier}`);
             if (requiredReposList.length > 0) {
@@ -411,6 +436,10 @@ jobs:
                 
                 for (const task of nextReleaseTasks) {
                   try {
+                    if (isBackwardMove(task, RELEASE_STAGE_PROP, PROD_STAGE)) {
+                      console.log(`Task ${task.id}: current status "${currentStatusName(task, RELEASE_STAGE_PROP)}" ranks above "${PROD_STAGE}" → skipping`);
+                      continue;
+                    }
                     const props = {
                       [RELEASE_REL_PROP]: { relation: [{ id: prodReleaseId }] },
                       [RELEASE_STAGE_PROP]: { status: { name: PROD_STAGE } },
