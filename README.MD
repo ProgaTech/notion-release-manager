@@ -56,6 +56,32 @@ When a PR is opened, edited, or marked ready for review, this workflow:
 
 **Secondary PR Detection:** If a PR has entries in the "Dependent PRs" section, it's considered a secondary PR. For secondary PRs, Impact, Release Notes, and Testing Notes are optional since those details should be in the master/primary PR.
 
+### Automatic Task Creation Workflow (`notion-autocreate.yaml`)
+
+**Opt-in.** By default the validation workflow *blocks* any PR whose title has no task ID. Some teams instead want a PR opened without a task ID to seed a fresh Notion task automatically, so genuinely-untracked work is tracked from the start. This workflow does that:
+
+- Opt-in by wiring alone: adding this job to your caller enables the feature; leaving it out means the validation workflow keeps blocking no-ID PRs as before.
+- Fires only when the PR title contains **no** task ID — a PR referencing an existing or mistyped ID is never touched, so no duplicate tasks are created.
+- Fires only on the `opened` / `ready_for_review` events (editing a title later won't spawn a stray task).
+- Creates a Notion task with **Title** = PR title, **Status** = `In Review` (configurable), and **Release Label** parsed from the `## Impact` checkbox.
+- Reads the Notion-assigned ID back and **rewrites the PR title** to include it (e.g. `Add login button` → `STR-3051 Add login button`), so all downstream workflows resolve the task normally.
+
+> **Note on IDs:** because the task ID is a Notion `unique_id` (auto-assigned), the created task **cannot** reuse a developer-typed ID — that's why this only triggers when the title has no ID at all. Notion picks the number; the workflow adopts it and writes it back into the PR title.
+
+**Wiring:** run it *before* validation using `needs:`, so the injected ID is present when validation re-reads the title:
+
+```yaml
+jobs:
+  autocreate:
+    uses: your-org/notion-release-manager/.github/workflows/notion-autocreate.yaml@main
+    secrets:
+      NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
+      NOTION_TASKS_DATABASE_ID: ${{ secrets.NOTION_TASKS_DATABASE_ID }}
+  validate:
+    needs: autocreate
+    uses: your-org/notion-release-manager/.github/workflows/pr-template-validation.yaml@main
+```
+
 ---
 
 ## 🚀 How to Integrate in Your Repo
@@ -453,6 +479,13 @@ All workflows support many input parameters for customization. See the workflow 
 - **`task_id_pattern`** - Regex pattern for task IDs in PR title (default: `STR-\d+`)
   - Example: `"PROJ-\\d+"` for `PROJ-123` format
   - Example: `"[A-Z]+-\\d+"` for any uppercase prefix
+
+### Automatic Task Creation Workflow
+
+- **`initial_stage`** - Status value set on the newly created task (default: `In Review`)
+- **`task_title_property`** - Notion title property name for the tasks DB (default: `Name`)
+- **`title_id_format`** - How the assigned ID is injected into the PR title (default: `{id} {title}`)
+- Also supports `task_id_pattern`, `task_id_property`, `release_stage_property`, and the `release_label_*` inputs
 
 ### Release Workflows
 

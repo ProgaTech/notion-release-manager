@@ -1,0 +1,222 @@
+name: Notion Autocreate Task
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: "PR number to process (for manual dispatch). When set, the event-type gate is bypassed."
+        required: false
+        type: string
+      task_id_pattern:
+        description: "Regex pattern for detecting an existing task ID in the PR title"
+        required: false
+        type: string
+        default: "STR-\\d+"
+      task_id_property:
+        description: "Notion unique_id property name for the task ID (used to read the assigned ID back)"
+        required: false
+        type: string
+        default: "ID"
+      task_title_property:
+        description: "Notion title property name for the task (the DB's primary title column)"
+        required: false
+        type: string
+        default: "Name"
+      release_stage_property:
+        description: "Notion property name for release stage/status"
+        required: false
+        type: string
+        default: "Status"
+      initial_stage:
+        description: "Status value set on the newly created task"
+        required: false
+        type: string
+        default: "In Review"
+      release_label_property:
+        description: "Notion property name for release labels"
+        required: false
+        type: string
+        default: "Release Label"
+      release_label_major:
+        description: "PR label for major version bump"
+        required: false
+        type: string
+        default: "Major"
+      release_label_minor:
+        description: "PR label for minor version bump"
+        required: false
+        type: string
+        default: "Minor"
+      release_label_patch:
+        description: "PR label for patch version bump"
+        required: false
+        type: string
+        default: "Patch"
+      title_id_format:
+        description: "How the assigned ID is injected into the PR title. Tokens: {id} {title}"
+        required: false
+        type: string
+        default: "{id} {title}"
+    secrets:
+      NOTION_API_TOKEN:
+        required: false
+      NOTION_TASKS_DATABASE_ID:
+        required: false
+
+# Serialize overlapping events for the same PR so two runs cannot both observe
+# "no ID" and double-create a task.
+concurrency:
+  group: notion-autocreate-${{ inputs.pr_number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  autocreate-task:
+    runs-on: ubuntu-latest
+    env:
+      INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+      TASK_ID_PATTERN: ${{ inputs.task_id_pattern }}
+      TASK_ID_PROPERTY: ${{ inputs.task_id_property }}
+      TASK_TITLE_PROPERTY: ${{ inputs.task_title_property }}
+      RELEASE_STAGE_PROPERTY: ${{ inputs.release_stage_property }}
+      INITIAL_STAGE: ${{ inputs.initial_stage }}
+      RELEASE_LABEL_PROPERTY: ${{ inputs.release_label_property }}
+      RELEASE_LABEL_MAJOR: ${{ inputs.release_label_major }}
+      RELEASE_LABEL_MINOR: ${{ inputs.release_label_minor }}
+      RELEASE_LABEL_PATCH: ${{ inputs.release_label_patch }}
+      TITLE_ID_FORMAT: ${{ inputs.title_id_format }}
+    steps:
+      - name: Autocreate missing Notion task
+        uses: actions/github-script@v6
+        env:
+          NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
+          NOTION_TASKS_DATABASE_ID: ${{ secrets.NOTION_TASKS_DATABASE_ID }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // ---- Resolve PR number ------------------------------------------
+            const inputPrNumber = (process.env.INPUT_PR_NUMBER || '').trim();
+            const isManual = inputPrNumber !== '';
+            const prNumber = isManual
+              ? parseInt(inputPrNumber)
+              : context.payload.pull_request?.number;
+
+            if (!prNumber) {
+              console.log('No PR number available. Nothing to do.');
+              return;
+            }
+
+            // ---- Gate 2: event type (skip for manual dispatch) --------------
+            const action = context.payload?.action;
+            const allowedActions = ['opened', 'ready_for_review'];
+            if (!isManual && action && !allowedActions.includes(action)) {
+              console.log(`Event action "${action}" is not opened/ready_for_review. Skipping.`);
+              return;
+            }
+
+            // ---- Fresh fetch of the PR (belt-and-suspenders idempotency) ----
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+
+            const taskIdPattern = new RegExp(process.env.TASK_ID_PATTERN, 'gi');
+            const existingIds = pr.title.match(taskIdPattern) || [];
+            if (existingIds.length > 0) {
+              console.log(`PR title already contains task ID(s): ${existingIds.join(', ')}. Skipping.`);
+              return;
+            }
+
+            // ---- Parse Release Label from the ## Impact section -------------
+            function stripComments(text) {
+              if (!text) return '';
+              return text.replace(/<!--[\s\S]*?-->/g, '').trim();
+            }
+
+            let releaseLabel = null;
+            const impactSection = pr.body?.match(/## Impact([\s\S]*?)(?=##|$)/i);
+            if (impactSection) {
+              const impactText = stripComments(impactSection[1]);
+              const majorMatch = impactText.match(/[-*]?\s*\[x\]\s*\*\*Major\*\*/i) || impactText.match(/\[x\]\s*.*?\*\*Major\*\*/i);
+              const minorMatch = impactText.match(/[-*]?\s*\[x\]\s*\*\*Minor\*\*/i) || impactText.match(/\[x\]\s*.*?\*\*Minor\*\*/i);
+              const patchMatch = impactText.match(/[-*]?\s*\[x\]\s*\*\*Patch\*\*/i) || impactText.match(/\[x\]\s*.*?\*\*Patch\*\*/i);
+              if (majorMatch) releaseLabel = process.env.RELEASE_LABEL_MAJOR;
+              else if (minorMatch) releaseLabel = process.env.RELEASE_LABEL_MINOR;
+              else if (patchMatch) releaseLabel = process.env.RELEASE_LABEL_PATCH;
+            }
+
+            // ---- Create the Notion task -------------------------------------
+            const notionApi = 'https://api.notion.com/v1';
+            const notionToken = process.env.NOTION_API_TOKEN;
+            const tasksDB = process.env.NOTION_TASKS_DATABASE_ID;
+
+            if (!notionToken || !tasksDB) {
+              core.setFailed('autocreate is enabled but NOTION_API_TOKEN / NOTION_TASKS_DATABASE_ID secrets are missing.');
+              return;
+            }
+
+            const headers = {
+              'Authorization': `Bearer ${notionToken}`,
+              'Notion-Version': '2022-06-28',
+              'Content-Type': 'application/json'
+            };
+
+            const TASK_ID_PROPERTY = process.env.TASK_ID_PROPERTY;
+            const TASK_TITLE_PROP = process.env.TASK_TITLE_PROPERTY;
+            const RELEASE_STAGE_PROP = process.env.RELEASE_STAGE_PROPERTY;
+            const RELEASE_LABEL_PROP = process.env.RELEASE_LABEL_PROPERTY;
+            const INITIAL_STAGE = process.env.INITIAL_STAGE;
+
+            const originalTitle = pr.title;
+            const properties = {
+              [TASK_TITLE_PROP]: { title: [{ text: { content: originalTitle.slice(0, 2000) } }] },
+              [RELEASE_STAGE_PROP]: { status: { name: INITIAL_STAGE } }
+            };
+            if (releaseLabel) {
+              properties[RELEASE_LABEL_PROP] = { select: { name: releaseLabel } };
+            }
+
+            let created;
+            try {
+              const res = await fetch(`${notionApi}/pages`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ parent: { database_id: tasksDB }, properties })
+              });
+              if (!res.ok) throw new Error(`Create failed: ${res.status} ${await res.text()}`);
+              created = await res.json();
+            } catch (e) {
+              core.setFailed(`Failed to create Notion task: ${e.message}`);
+              return;
+            }
+
+            // ---- Read the assigned unique_id back ---------------------------
+            const idProp = created.properties?.[TASK_ID_PROPERTY]?.unique_id;
+            if (!idProp || idProp.number == null) {
+              core.setFailed(`Created task but could not read unique_id from property "${TASK_ID_PROPERTY}".`);
+              return;
+            }
+            const assignedId = idProp.prefix ? `${idProp.prefix}-${idProp.number}` : String(idProp.number);
+            console.log(`Created Notion task ${assignedId} for PR #${prNumber}`);
+
+            // ---- Inject the ID back into the PR title -----------------------
+            const newTitle = (process.env.TITLE_ID_FORMAT || '{id} {title}')
+              .replace('{id}', assignedId)
+              .replace('{title}', originalTitle);
+
+            try {
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                title: newTitle,
+              });
+              console.log(`Updated PR #${prNumber} title to: ${newTitle}`);
+            } catch (e) {
+              core.setFailed(`Task ${assignedId} created but failed to update PR title: ${e.message}`);
+              return;
+            }
